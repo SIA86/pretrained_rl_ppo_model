@@ -92,20 +92,17 @@ def next_exit_exec_arrays(open_px: np.ndarray,
         if exit_sig[t]:
             next_exec[t] = t + 1
 
-    # для каждого t берём ближайший future exec>=t+2 (нужен хотя бы один бар после исполнения для PnL)
-    # можно искать «правее» линейно (О(N^2)), но сделаем эффективнее:
-    # префикс ближайших исполнений вперёд
-    # построим список всех индексов exec и потом двигаем указатель
-    exec_positions = np.where(next_exec >= 0)[0]
+    # список ИНДЕКСОВ ИСПОЛНЕНИЯ (t_exit+1), отсортированный по времени
+    exec_positions = next_exec[next_exec >= 0]
     ptr = 0
     for t in range(n):
         # продвинем ptr до первого exec >= t+2 (чтобы было минимум одно плечо PnL)
-        while ptr < len(exec_positions) and exec_positions[ptr] < t+2:
+        while ptr < len(exec_positions) and exec_positions[ptr] < (t + 2):
             ptr += 1
         if ptr < len(exec_positions):
-            e = exec_positions[ptr]
-            exit_idx[t] = e
-            exit_px[t]  = open_px[e]
+            e_exec = exec_positions[ptr]
+            exit_idx[t] = e_exec
+            exit_px[t]  = open_px[e_exec]
     return exit_idx, exit_px
 
 
