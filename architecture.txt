@@ -1,0 +1,113 @@
+Главные цели и задачи проекта:
+
+Берем торговую стратегию и по историческим финансовым данным формата OHLCV размечаем точки входа и выхода из сделки. Добавляем вспомогательные индикаторы.
+Нормализуем данные и нарезаем с помощью скользящего окна. Используем SL сеть, обученную на q_supervised метках, как pretrained policy для PPO. Создаем
+правдоподобную среду - симулятор торговли и обучаем на ней PPO модель с постепенно затихающим штрафом от KL учителя.
+
+1. Предварительная обработка данных:
+- Определение единицы UNIX-времени: 's'|'ms'|'us'|'ns' колонки timestamp
+- robust_infer_freq - сначала pd.infer_freq, затем медианный лаг → ближайший Offset
+- ВСЕГДА сбрасывает индекс и строит новый DatetimeIndex из `timestamp_col`
+- Нормализует таймзону к `tz` (по умолчанию UTC)
+- Удаляет (или агрегирует) дубликаты по меткам времени
+- Восстанавливает регулярную частоту (устойчивый infer); при необходимости использует `fallback_freq`
+- Заполняет пропуски: цены/фичи — ffill; объёмы — 0; таргеты — не трогает
+- Делает срез по окну "from_date, to_date"
+- Возвращает DataFrame с tz-aware DatetimeIndex.
+
+2. Добавление индикаторов
+- Рассматриваем ниаболее полезные индикторы для анализа финансов
+- EMA_Fast, EMA_Slow, ADX, ATR, RSI, MACD, MACD_Signal, MACD_Hist, %K, %D, Upper_bb, Middle_bb, Lower_bb, OBV, CCI  Williams, %R, MFI, ROC, VWAP
+- функции для расчета индикаторов выполнены с помощью numba njit логики
+- необходимо обеспечить отсутствие утечек и заглядывания в будущее
+
+3. Сигнал от референс стратегии:
+- разметка сигналов по референс стратегии осуществляется по Close цене, вход в сделку будет по Open t+1
+
+4. Разметка состояния портфеля и q_supervised меток
+- по сигналу от референс стратегии размечаем в позиции мы или нет
+- однопозиционная логика для ОДНОЙ стороны:
+  - side_long=True  -> разрешён только LONG: enter=buy_sig, exit=sell_sig, pos∈{0,+1}
+  - side_long=False -> разрешён только SHORT: enter=sell_sig, exit=buy_sig, pos∈{0,-1}
+- разметка Q-значений для одной стороны (long-only или short-only) по РЕФЕРЕНС-СТРАТЕГИИ.
+- Действия:
+    Open: открыть позицию в разрешённую сторону.
+    Close: закрыть текущую позицию.
+    Hold: удерживать открытую позицию.
+    Wait: оставаться во flat.
+- Комиссии/проскальзывание учитываются симметрично при входе/выходе.
+- Требуются колонки: ['Open','High','Low','Close','Signal_Rule']
+- Signal_Rule: +1 — buy-сигнал, -1 — sell-сигнал (teacher)
+
+
+В SL сети входы не должны содержать утечек и заглядывания в будущее (pos не подавать напрямую).
+Для PPO всё равно нужно знать состояние позиции → сделали pos-адаптер в “голове” модели, чтобы согласовать пространство фичей.
+
+Разметка данных и отсутствие утечек
+
+
+Dataset / Preprocessing:
+
+Окна собираем через свой билдер (DatasetBuilderForYourColumns):
+вход X: (batch, seq_len, num_features);
+метки Y: (batch, N_actions) soft labels (A_Open … A_Close);
+маски M: (batch, N_actions) (валидность действий);
+W: (batch, N_actions) — Q-payoffs;
+R: (batch,) — realized return;
+SW: (batch,) — sample weights.
+
+sliding_window_view заменили на индексную нарезку (устойчивая к версиям NumPy).
+Нормализация делается по train-части → сначала split, потом считаем статистики и применяем ко всем.
+
+Модель (NN)
+Архитектура: Stacked Residual LSTM:
+несколько LSTM слоёв, с residual-связями;
+последний таймстеп → Dense head;
+logits (B,N_actions).
+
+Маска действий (M) не входит в модель, считаем после в training loop
+Loss: masked_categorical_crossentropy (поддержка soft labels + mask + sample_weight).
+
+Sample_weight:
+ClassBalance — компенсируем дисбаланс классов (особенно против доминации Hold).
+
+Метрики:
+masked_accuracy
+expected return (ER) = ∑ π(a|x) * W(a)
+F1 per class, Macro-F1
+Information Coefficient (Pearson/Spearman corr between logits vs W)
+
+ER (Expected Return):
+усреднённое по всему датасету значение ∑ π(a) * W(a);
+показывает согласованность модели с Q;
+абсолютные значения бессмысленны, важно сравнивать в динамике и с oracle.
+
+Oracle ER:
+верхняя планка = mean(max_a W(a));
+добавили расчёт в evaluate_dataset.
+ER_ratio = ER / oracle_ER → удобная относительная метрика (0…1).
+IC (Pearson, Spearman) ~ показывает корреляцию предсказаний с Q-payoffs.
+
+Learning rate schedules: Cosine / OneCycle.
+Early stopping, best-weights restore, LR restarts на плато.
+
+Визуализация обучения
+Кривые по эпохам: loss, accuracy, Macro-F1, ER (model + oracle), ER_ratio, IC.
+Confusion matrix + F1 per class (val/test).
+Сохраняем историю в history (train/val).
+
+Отрисовка / Аналитика
+
+Candles + EMA + стрелки:
+
+Buy: ^ зелёный;
+Sell: v красный;
+Close: x чёрный;
+Hold: o серый.
+
+Легенда сгруппирована по типам действий.
+Под графиком цены — subplot «Position» (ступенчатая линия -1/0/+1).
+
+Для enriched разметки:
+верхний график: цена+EMA + reference стрелки (Signal_Rule);
+нижний график: лучшие Q-действия.
