@@ -87,7 +87,7 @@ def next_exit_exec_arrays(open_px: np.ndarray,
     # long-only: выход = sell_sig; short-only: выход = buy_sig
     exit_sig = sell_sig if side_long else buy_sig
     next_exec = np.full(n, -1, dtype=np.int64)
-    # для каждого t_exit, исполняем на (t_exit+1)
+    # для каждого t_exit, исполнение на (t_exit+1)
     for t in range(n - 1):
         if exit_sig[t]:
             next_exec[t] = t + 1
@@ -97,7 +97,7 @@ def next_exit_exec_arrays(open_px: np.ndarray,
     ptr = 0
     for t in range(n):
         # продвинем ptr до первого exec >= t+2 (чтобы было минимум одно плечо PnL)
-        while ptr < len(exec_positions) and exec_positions[ptr] < (t + 2):
+        while ptr < len(exec_positions) and exec_positions[ptr] < (t+2):
             ptr += 1
         if ptr < len(exec_positions):
             e_exec = exec_positions[ptr]
@@ -370,9 +370,14 @@ def enrich_q_labels_trend_one_side(
             # средневзвешенно по доступным n (нормировка по доступным весам)
             weights = np.broadcast_to(w, vals.shape).copy()
             weights[~mask_cols] = 0.0
-            denom = weights.sum(axis=1, keepdims=True) + 1e-12
-            Q_Open[m_open] = np.nansum(vals * weights, axis=1) / denom.squeeze(1)
-            M_Open[m_open] = 1
+            denom = weights.sum(axis=1, keepdims=True)
+            valid_rows = denom.squeeze(1) > 0.0
+            denom[denom == 0.0] = np.nan  # чтобы итог был NaN, а не 0
+            q_vals = np.nansum(vals * weights, axis=1) / denom.squeeze(1)
+            # назначаем только туда, где есть хотя бы один валидный горизонт
+            idx_rows = np.where(m_open)[0]
+            Q_Open[idx_rows[valid_rows]] = q_vals[valid_rows]
+            M_Open[idx_rows[valid_rows]] = 1
 
         # Close: 0
         m_close = inpos & has_next
@@ -390,9 +395,13 @@ def enrich_q_labels_trend_one_side(
             vals[~mask_cols] = np.nan
             weights = np.broadcast_to(w, vals.shape).copy()
             weights[~mask_cols] = 0.0
-            denom = weights.sum(axis=1, keepdims=True) + 1e-12
-            Q_Hold[m_hold] = np.nansum(vals * weights, axis=1) / denom.squeeze(1)
-            M_Hold[m_hold] = 1
+            denom = weights.sum(axis=1, keepdims=True)
+            valid_rows = denom.squeeze(1) > 0.0
+            denom[denom == 0.0] = np.nan
+            q_vals = np.nansum(vals * weights, axis=1) / denom.squeeze(1)
+            idx_rows = np.where(m_hold)[0]
+            Q_Hold[idx_rows[valid_rows]] = q_vals[valid_rows]
+            M_Hold[idx_rows[valid_rows]] = 1
 
         # Wait: 0
         m_wait = flat
@@ -402,16 +411,19 @@ def enrich_q_labels_trend_one_side(
         # опциональный MAE-штраф (на интервалах [t+1, t+n)), применим эквивалентно к средневзвешенной MAE
         if use_mae_penalty and mae_lambda > 0.0:
             # Предвычислим MAE для каждого n (дороже, но прозрачно)
-            def mae_n_long(t, n):
-                L, R = t+1, t+n
-                if R <= L or R > n or not np.isfinite(exec_next_open[t]): return 0.0
+            N = n  # длина временного ряда
+            def mae_n_long(t, n_step):
+                L, R = t + 1, t + n_step  # R - правая граница (исключительная)
+                if R <= L or R > N or not np.isfinite(exec_next_open[t]): 
+                    return 0.0
                 worst = np.nanmin(Low[L:R])
-                return min(worst/exec_next_open[t] - 1.0, 0.0)
-            def mae_n_short(t, n):
-                L, R = t+1, t+n
-                if R <= L or R > n or not np.isfinite(exec_next_open[t]): return 0.0
+                return min(worst / exec_next_open[t] - 1.0, 0.0)
+            def mae_n_short(t, n_step):
+                L, R = t + 1, t + n_step
+                if R <= L or R > N or not np.isfinite(exec_next_open[t]): 
+                    return 0.0
                 worst = np.nanmax(High[L:R])
-                return min(exec_next_open[t]/worst - 1.0, 0.0)
+                return min(exec_next_open[t] / worst - 1.0, 0.0)
 
             # HOLD
             if mae_apply_to in ('hold','both'):
@@ -419,9 +431,9 @@ def enrich_q_labels_trend_one_side(
                 penalties = []
                 for t in idxs:
                     acc = 0.0; zw = 0.0
-                    for j in range(1, Hm+1):
+                    for j in range(1, Hm + 1):
                         R = t + j
-                        if R < n:  # допустимый
+                        if R < N:
                             pen = mae_n_long(t, j) if side_long else mae_n_short(t, j)
                             acc += w[j-1] * np.abs(pen); zw += w[j-1]
                     penalties.append(acc / (zw + 1e-12))
@@ -433,9 +445,9 @@ def enrich_q_labels_trend_one_side(
                 penalties = []
                 for t in idxs:
                     acc = 0.0; zw = 0.0
-                    for j in range(1, Hm+1):
+                    for j in range(1, Hm + 1):
                         R = t + j
-                        if R < n:
+                        if R < N:
                             pen = mae_n_long(t, j) if side_long else mae_n_short(t, j)
                             acc += w[j-1] * np.abs(pen); zw += w[j-1]
                     penalties.append(acc / (zw + 1e-12))
