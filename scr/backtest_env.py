@@ -73,6 +73,9 @@ def _step_single(
 ) -> tuple:
     """Векторизованное выполнение одного шага симуляции.
 
+    Параметр ``action`` принимает значения:
+    0=Wait, 1=Open, 2=Close, 3=Hold.
+
     Возвращает кортеж со всеми обновлёнными состояниями и вспомогательной
     информацией, которая используется для логирования и расчёта метрик.
 
@@ -123,7 +126,7 @@ def _step_single(
             closed = True
             fees_paid += _fee_notional(exec_price, cfg.leverage, cfg.fee)
     else:
-        # Оставаться вне позиции
+        # Оставаться вне позиции/удерживать позицию
         if position == 0 and cfg.hold_penalty > 0.0:
             fees_paid += cfg.hold_penalty
 
@@ -212,7 +215,19 @@ class BacktestEnv:
         self.history: List[Dict] = []  # журнал событий
         return self.features[self.t]
 
+    def action_mask(self) -> np.ndarray:
+        """Маска допустимых действий.
+
+        Порядок действий: 0=Wait, 1=Open, 2=Close, 3=Hold."""
+        if self.position == 0:
+            return np.array([1, 1, 0, 0], dtype=np.int8)
+        return np.array([0, 0, 1, 1], dtype=np.int8)
+
     def step(self, action: int) -> tuple:
+        mask = self.action_mask()
+        if action < 0 or action >= len(mask) or not mask[action]:
+            action = 0 if self.position == 0 else 3
+
         (
             self.t,
             self.position,
@@ -267,6 +282,7 @@ class BacktestEnv:
             "realized_pnl": self.realized_pnl,
             "unrealized_pnl": unrealized,
             "position": self.position,
+            "action_mask": mask,
         }
         return obs, reward, done, info
 
@@ -349,3 +365,64 @@ class BacktestEnv:
 
         plt.tight_layout()
         return fig
+
+    def metrics_report(self) -> str:
+        """Сформировать отчёт по ключевым метрикам торговой истории.
+
+        Возвращает многострочную строку со следующими показателями:
+        equity, реализованный PnL, количество закрытых сделок, win rate,
+        средний PnL на сделку, profit factor, максимальная просадка и
+        коэффициент Шарпа.
+        """
+        if not self.history:
+            return "История пуста, метрики недоступны."
+
+        log = self.logs()
+        equity = log["equity"].iloc[-1]
+        realized_pnl = log["realized_pnl"].iloc[-1]
+
+        trades = log[log["closed"]]
+        n_trades = len(trades)
+        win_rate = (trades["pnl_trade"] > 0).mean() if n_trades else 0.0
+        avg_pnl = trades["pnl_trade"].mean() if n_trades else 0.0
+
+        gross_profit = trades[trades["pnl_trade"] > 0]["pnl_trade"].sum()
+        gross_loss = trades[trades["pnl_trade"] < 0]["pnl_trade"].sum()
+        if gross_loss < 0:
+            profit_factor = gross_profit / abs(gross_loss)
+        else:
+            profit_factor = np.inf if gross_profit > 0 else 0.0
+
+        equity_curve = log["equity"]
+        run_max = equity_curve.cummax()
+        drawdown = (run_max - equity_curve) / run_max.replace(0, np.nan)
+        max_drawdown = drawdown.max()
+        if pd.isna(max_drawdown):
+            max_drawdown = 0.0
+
+        returns = log["reward"]
+        if len(returns) > 1 and returns.std() > 0:
+            sharpe = (returns.mean() / returns.std()) * np.sqrt(len(returns))
+        else:
+            sharpe = 0.0
+
+        metrics = [
+            ("Equity", equity),
+            ("Realized PnL", realized_pnl),
+            ("Closed trades", n_trades),
+            ("Win rate", win_rate * 100),
+            ("Avg PnL per trade", avg_pnl),
+            ("Profit factor", profit_factor),
+            ("Max drawdown", max_drawdown),
+            ("Sharpe ratio", sharpe),
+        ]
+
+        lines = []
+        for name, value in metrics:
+            if name == "Win rate":
+                lines.append(f"{name}: {value:.2f}%")
+            elif isinstance(value, float):
+                lines.append(f"{name}: {value:.4f}")
+            else:
+                lines.append(f"{name}: {value}")
+        return "\n".join(lines)
