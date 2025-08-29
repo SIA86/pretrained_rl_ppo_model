@@ -90,5 +90,7 @@ def test_use_log_reward():
     env_log = make_env([1, 2, 3], use_log_reward=True)
     last_log = run_actions(env_log, [1, 2])
     assert last_lin["equity"] == pytest.approx(0.5)
-    assert last_log["equity"] == pytest.approx(np.log1p(0.5))
+    assert last_log["equity"] == pytest.approx(0.5)
+    assert last_lin["reward"] == pytest.approx(0.5)
+    assert last_log["reward"] == pytest.approx(np.log1p(0.5))
 

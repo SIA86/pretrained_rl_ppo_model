@@ -66,7 +66,6 @@ def _step_single(
     t: int64,
     position: int64,
     entry_price: float64,
-    equity: float64,
     realized_pnl: float64,
     prices: np.ndarray,
     cfg: EnvConfig
@@ -93,19 +92,24 @@ def _step_single(
     # Текущая и следующая цены
     this_price = prices[t]
     next_price = prices[next_t]
-    # Относительное изменение цены с учётом плеча
-    ret = ((next_price - this_price) / this_price) * cfg.leverage
+
+    prev_position = position  # позиция до совершения действия
+    prev_realized = realized_pnl
+    prev_unrealized = 0.0
+    if prev_position != 0:
+        prev_unrealized = (
+            prev_position
+            * ((this_price - entry_price) / entry_price)
+            * cfg.leverage
+        )
 
     # Флаги и накопители, используемые ниже
     opened = False
     closed = False
     exec_price = 0.0
     pnl_trade = 0.0
-    fees_paid = 0.0
 
     allowed_side = cfg.mode  # допустимое направление торговли
-
-    prev_position = position  # позиция до совершения действия
 
     if action == 1:
         # Открыть позицию
@@ -115,31 +119,41 @@ def _step_single(
             position = allowed_side
             opened = True
             fee = _fee_notional(exec_price, cfg.leverage, cfg.fee)
-            fees_paid += fee
             realized_pnl -= fee
     elif action == 2:
         # Закрыть имеющуюся позицию
         if position != 0:
             exec_price = _exec_price(next_price, -position, cfg.spread)
-            pnl_trade = position * ((exec_price - entry_price) / entry_price) * cfg.leverage
+            pnl_trade = (
+                position * ((exec_price - entry_price) / entry_price) * cfg.leverage
+            )
             fee = _fee_notional(exec_price, cfg.leverage, cfg.fee)
             realized_pnl += pnl_trade - fee
             position = 0
             entry_price = 0.0
             closed = True
-            fees_paid += fee
     else:
         # Оставаться вне позиции/удерживать позицию
         if position == 0 and cfg.hold_penalty > 0.0:
-            fees_paid += cfg.hold_penalty
+            realized_pnl -= cfg.hold_penalty
 
-    # Доход/убыток за шаг рассчитываем по позиции до действия
-    pnl_step = prev_position * ret
+    if prev_position != 0 and cfg.time_penalty > 0.0:
+        realized_pnl -= cfg.time_penalty
+
+    # Нереализованный PnL после совершения действия
+    unrealized = 0.0
+    if position != 0:
+        unrealized = (
+            position * ((next_price - entry_price) / entry_price) * cfg.leverage
+        )
+
+    equity = realized_pnl + unrealized
+    prev_equity = prev_realized + prev_unrealized
+
     # Возможность использовать логарифмическую доходность
+    pnl_step = equity - prev_equity
     core = np.log1p(pnl_step) if cfg.use_log_reward else pnl_step
-    # Итоговое вознаграждение с вычетом комиссий и штрафов
-    reward = cfg.reward_scale * (core - fees_paid - cfg.time_penalty * (prev_position != 0))
-    equity += reward
+    reward = cfg.reward_scale * core
 
     return (
         next_t,
@@ -165,7 +179,7 @@ class BacktestEnv:
         self,
         df: pd.DataFrame,
         feature_cols: Optional[List[str]] = None,
-        price_col: str = "Close",
+        price_col: str = "close",
         cfg: EnvConfig = DEFAULT_CONFIG,
     ):
         """Подготовка данных и настройка параметров среды.
@@ -248,7 +262,6 @@ class BacktestEnv:
             int64(self.t),
             int64(self.position),
             float64(self.entry_price),
-            float64(self.equity),
             float64(self.realized_pnl),
             self.prices,
             self.cfg,
