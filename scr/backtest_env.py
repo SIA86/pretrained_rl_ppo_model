@@ -48,19 +48,19 @@ DEFAULT_CONFIG = EnvConfig(
 # =============================================================
 # Numba helpers
 # =============================================================
-@njit(cache=True, fastmath=True)
+@njit(cache=False, fastmath=False)
 def _exec_price(next_price: float64, side: int64, spread: float64) -> float64:
     """Расчёт цены исполнения с учётом спреда."""
     return next_price * (1.0 + spread * side)
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=False, fastmath=False)
 def _fee_notional(price_exec: float64, leverage: float64, fee: float64) -> float64:
     """Расчёт комиссии, уплачиваемой за сделку."""
     # Комиссия пропорциональна номиналу позиции: цена * плечо * ставка
     return price_exec * leverage * fee
 
-@njit(cache=True, fastmath=True)
+@njit(cache=False, fastmath=False)
 def _step_single(
     action: int64,
     t: int64,
