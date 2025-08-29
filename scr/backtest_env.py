@@ -165,7 +165,7 @@ class BacktestEnv:
         self,
         df: pd.DataFrame,
         feature_cols: Optional[List[str]] = None,
-        price_col: str = "close",
+        price_col: str = "Close",
         cfg: EnvConfig = DEFAULT_CONFIG,
     ):
         """Подготовка данных и настройка параметров среды.
