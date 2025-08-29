@@ -114,17 +114,20 @@ def _step_single(
             entry_price = exec_price
             position = allowed_side
             opened = True
-            fees_paid += _fee_notional(exec_price, cfg.leverage, cfg.fee)
+            fee = _fee_notional(exec_price, cfg.leverage, cfg.fee)
+            fees_paid += fee
+            realized_pnl -= fee
     elif action == 2:
         # Закрыть имеющуюся позицию
         if position != 0:
             exec_price = _exec_price(next_price, -position, cfg.spread)
             pnl_trade = position * ((exec_price - entry_price) / entry_price) * cfg.leverage
-            realized_pnl += pnl_trade
+            fee = _fee_notional(exec_price, cfg.leverage, cfg.fee)
+            realized_pnl += pnl_trade - fee
             position = 0
             entry_price = 0.0
             closed = True
-            fees_paid += _fee_notional(exec_price, cfg.leverage, cfg.fee)
+            fees_paid += fee
     else:
         # Оставаться вне позиции/удерживать позицию
         if position == 0 and cfg.hold_penalty > 0.0:
