@@ -314,12 +314,18 @@ def plot_enriched_actions_one_side(
         ax_actions.legend(loc="upper left")
 
     if indicators_panels:
-        for ax, (panel_name, series_dict) in zip(ax_extras, indicators_panels.items()):
-            is_bar = len(series_dict) == 1 and next(iter(series_dict)).lower() in (
-                "bar",
-                "hist",
-                "volume",
-                "vol",
+        for ax, (panel_name, data) in zip(ax_extras, indicators_panels.items()):
+            if isinstance(data, dict):
+                series_dict = data
+            elif isinstance(data, pd.DataFrame):
+                series_dict = {col: data[col] for col in data.columns}
+            else:
+                series_dict = {panel_name: data}
+
+            labels = list(series_dict.keys())
+            is_bar = (
+                len(labels) == 1
+                and labels[0].lower() in {"bar", "hist", "volume", "vol"}
             )
             if is_bar:
                 label, src = next(iter(series_dict.items()))
