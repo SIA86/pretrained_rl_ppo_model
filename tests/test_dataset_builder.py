@@ -28,7 +28,6 @@ def _make_df(n: int = 20) -> pd.DataFrame:
         data[f"Mask_{a}"] = np.ones(n, dtype=np.float32)
     return pd.DataFrame(data)
 
-
 def df_from_WM(W, M, extra_cols=None):
     d = {}
     for i, a in enumerate(ACTIONS):
@@ -37,7 +36,6 @@ def df_from_WM(W, M, extra_cols=None):
     if extra_cols:
         d.update(extra_cols)
     return pd.DataFrame(d)
-
 
 def test_fit_transform_shapes():
     df = _make_df(30)
@@ -51,7 +49,6 @@ def test_fit_transform_shapes():
     assert Wtr.shape == Ytr.shape
     assert Rtr.shape[0] == Xtr.shape[0]
     assert SWtr is None
-
 
 def test_teacher_R_all_zero_mask_rows():
     W = np.array(
@@ -118,4 +115,5 @@ def test_extract_features_excludes_Q_Mask_A_and_respects_drop():
     )
     X, cols = extract_features(df, drop_cols=["feat2"])
     assert cols == ["feat1"] and X.shape == (3, 1)
+
 

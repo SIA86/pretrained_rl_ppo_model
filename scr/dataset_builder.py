@@ -79,7 +79,7 @@ def _clean_masks(M: np.ndarray) -> np.ndarray:
 
 
 def extract_features(df: pd.DataFrame, drop_cols=None):
-    drop = set(drop_cols or [])
+    drop = set(drop_cols or [])<<<<<<< codex/create-dataset_builder.py-with-data-processing-functions
     exclude_prefixes = ("Q_", "Mask_", "A_")
     cols = [
         c
