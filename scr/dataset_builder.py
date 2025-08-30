@@ -260,10 +260,13 @@ def build_tf_dataset(
     import tensorflow as tf  # local import to avoid hard dependency at module import
 
     if SW is None:
-        ds = tf.data.Dataset.from_tensor_slices(((Xw, Mw), (Yw, Ww, Rw)))
+        ds = tf.data.Dataset.from_tensor_slices((Xw, (Yw, Mw, Ww, Rw)))
     else:
         ds = tf.data.Dataset.from_tensor_slices(
-            ((Xw, Mw), (Yw, Ww, Rw, SW.astype(np.float32).reshape(-1)))
+            (
+                Xw,
+                (Yw, Mw, Ww, Rw, SW.astype(np.float32).reshape(-1)),
+            )
         )
     if cache:
         # cache before shuffle so each epoch reshuffles freshly
