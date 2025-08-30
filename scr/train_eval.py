@@ -49,6 +49,7 @@ class CosineWithWarmup:
         s_mod = tf.math.floormod(s_int, tf.cast(self.total, tf.int32))
         step = tf.cast(s_mod, tf.float32)
         warm = tf.cast(tf.maximum(self.warm, 1), tf.float32)
+
         lr_warm = (
             self.base_lr * tf.minimum(step / warm, 1.0)
             if self.warm > 0
@@ -583,6 +584,7 @@ def confusion_and_f1_on_dataset(model: keras.Model, ds: tf.data.Dataset):
         masked_logits = apply_action_mask(logits, mb)
         y_true.append(np.argmax(yb.numpy(), axis=1))
         y_pred.append(np.argmax(masked_logits.numpy(), axis=1))
+
     y_true = np.concatenate(y_true)
     y_pred = np.concatenate(y_pred)
 

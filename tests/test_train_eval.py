@@ -54,7 +54,7 @@ def _ds_masked():
     y = tf.one_hot([1, 1, 2, 2], 3)
     yield ((x, m), (y,))
 
-
+    
 def test_unpack_batch_with_sw():
     x = tf.zeros((2, 5, 3))
     m = tf.ones((2, NUM_CLASSES))

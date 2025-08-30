@@ -71,8 +71,6 @@ def apply_action_mask(logits: tf.Tensor, mask: tf.Tensor, very_neg: float = VERY
     # replace invalid positions with a large negative constant
     return tf.where(m > 0.0, logits, vneg)
 
-
-
 def masked_logits_and_probs(logits: tf.Tensor, mask: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
     """Return masked logits and corresponding probabilities."""
 
@@ -82,6 +80,7 @@ def masked_logits_and_probs(logits: tf.Tensor, mask: tf.Tensor) -> tuple[tf.Tens
     # if all actions invalid, return zeros to avoid NaNs
     probs = tf.where(has_valid, probs, tf.zeros_like(probs, dtype=logits.dtype))
     return masked, probs
+
 def masked_categorical_crossentropy(
     y_true: tf.Tensor,
     logits: tf.Tensor,
