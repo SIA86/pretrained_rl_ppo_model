@@ -81,9 +81,7 @@ def masked_logits_and_probs(logits: tf.Tensor, mask: tf.Tensor) -> tuple[tf.Tens
     probs = tf.nn.softmax(masked, axis=-1)
     # if all actions invalid, return zeros to avoid NaNs
     probs = tf.where(has_valid, probs, tf.zeros_like(probs, dtype=logits.dtype))
-
-
-
+    return masked, probs
 def masked_categorical_crossentropy(
     y_true: tf.Tensor,
     logits: tf.Tensor,
