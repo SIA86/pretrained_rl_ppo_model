@@ -19,6 +19,7 @@ from scr.train_eval import (
     expected_return_metric,
     materialize_metrics,
     validate_one_epoch,
+    predict_logits_dataset,
 )
 from scr.dataset_builder import NUM_CLASSES
 
@@ -151,4 +152,18 @@ def test_materialize_metrics():
     out = materialize_metrics(metrics)
     assert out["a"] == 1.0
     assert out["b"] == [1, 2]
+
+
+def test_predict_logits_dataset():
+    model = DummyModel()
+    sig = (
+        tf.TensorSpec([None, 5], tf.float32),
+        (
+            tf.TensorSpec([None, 3], tf.float32),
+            tf.TensorSpec([None, 3], tf.float32),
+        ),
+    )
+    ds = tf.data.Dataset.from_generator(lambda: _ds_no_w(num_classes=3), output_signature=sig)
+    logits = predict_logits_dataset(model, ds)
+    assert logits.shape[1] == 3
 

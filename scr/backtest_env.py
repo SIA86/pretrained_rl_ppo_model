@@ -3,7 +3,7 @@ from __future__ import annotations
 # Стандартные библиотечные и внешние зависимости
 import numpy as np
 import pandas as pd
-from typing import Optional, List, Dict, NamedTuple
+from typing import Optional, List, Dict, NamedTuple, Any
 from numba import njit, boolean, int64, float64
 import matplotlib.pyplot as plt
 
@@ -478,3 +478,38 @@ class BacktestEnv:
             else:
                 lines.append(f"{name}: {value}")
         return "\n".join(lines)
+
+
+def run_backtest_with_logits(
+    df: pd.DataFrame,
+    logits: np.ndarray,
+    indices: np.ndarray,
+    feature_cols: Optional[List[str]] = None,
+    price_col: str = "close",
+    cfg: EnvConfig = DEFAULT_CONFIG,
+) -> BacktestEnv:
+    """Run backtest for given logits aligned to DataFrame rows."""
+
+    if len(logits) != len(indices):
+        raise ValueError("logits and indices length mismatch")
+    if len(indices) == 0:
+        raise ValueError("empty indices")
+    if not np.all(np.diff(indices) >= 0):
+        raise ValueError("indices must be non-decreasing")
+
+    start = int(indices[0])
+    end = int(indices[-1])
+    if end + 1 >= len(df):
+        raise ValueError("DataFrame shorter than required for last action")
+
+    df_slice = df.iloc[start : end + 2].copy()
+    env = BacktestEnv(df_slice, feature_cols=feature_cols, price_col=price_col, cfg=cfg)
+    env.reset()
+
+    actions = [0] * (end - start + 1)
+    for logit, idx in zip(logits, indices):
+        actions[int(idx) - start] = logit
+
+    for a in actions:
+        env.step(a)
+    return env
