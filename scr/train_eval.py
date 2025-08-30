@@ -739,6 +739,19 @@ def materialize_metrics(d: dict) -> dict:
     return out
 
 
+def predict_logits_dataset(model: keras.Model, ds: tf.data.Dataset) -> np.ndarray:
+    """Collect raw model logits over a dataset."""
+
+    logits_list = []
+    for batch in ds:
+        xb, *_ = _unpack_batch(batch)
+        logits = model(xb, training=False)
+        logits_list.append(logits.numpy())
+    if not logits_list:
+        return np.empty((0, NUM_CLASSES), dtype=np.float32)
+    return np.concatenate(logits_list, axis=0)
+
+
 __all__ = [
     "CosineWithWarmup",
     "OneCycleLR",
@@ -750,5 +763,6 @@ __all__ = [
     "oracle_expected_return_batch",
     "evaluate_dataset",
     "materialize_metrics",
+    "predict_logits_dataset",
 ]
 

@@ -117,3 +117,12 @@ def test_extract_features_excludes_Q_Mask_A_and_respects_drop():
     assert cols == ["feat1"] and X.shape == (3, 1)
 
 
+def test_fit_transform_returns_indices():
+    df = _make_df(20)
+    builder = DatasetBuilderForYourColumns(seq_len=3, norm="none", splits=(0.7, 0.15, 0.15))
+    splits = builder.fit_transform(df, return_indices=True)
+    Xte, _, _, _, _, _, idx = splits["test"]
+    assert idx.shape[0] == Xte.shape[0]
+    assert idx[0] == 19
+
+
