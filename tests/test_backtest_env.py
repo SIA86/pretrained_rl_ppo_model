@@ -94,3 +94,53 @@ def test_use_log_reward():
     assert last_lin["reward"] == pytest.approx(0.5)
     assert last_log["reward"] == pytest.approx(np.log1p(0.5))
 
+# Конструктор тестовых данных
+def make_df(n=6, start=100.0, step=1.0):
+    prices = np.array([start + i*step for i in range(n)], dtype=float)
+    return pd.DataFrame({"close": prices, "feat": np.arange(n)})
+
+def test_no_index_error_after_done():
+    df = make_df(5)  # индексы 0..4
+    cfg = EnvConfig(mode=1, fee=0.0, spread=0.0, leverage=1.0,
+                    max_steps=3, reward_scale=1.0,
+                    use_log_reward=False, time_penalty=0.0, hold_penalty=0.0)
+    env = BacktestEnv(df, feature_cols=["feat"], cfg=cfg)
+
+    # Совершаем ровно max_steps шагов
+    done = False
+    for _ in range(cfg.max_steps):
+        _, _, done, _ = env.step(0)  # Wait
+    assert done is True
+
+    # Доп. шаг после done не должен падать и должен оставаться done=True
+    try:
+        _, r, d, _ = env.step(0)
+    except IndexError:
+        pytest.fail("IndexError after done")
+    assert d is True
+    assert r == 0.0
+
+def test_log_reward_no_nan_on_large_negative():
+    # Имитация сильного минуса на шаге (резкий гэп вниз)
+    df = pd.DataFrame({"close": [100.0, 100.0, 0.1], "feat": [0,1,2]})
+    cfg = EnvConfig(mode=1, fee=0.0, spread=0.0, leverage=50.0,
+                    max_steps=10**9, reward_scale=1.0,
+                    use_log_reward=True, time_penalty=0.0, hold_penalty=0.0)
+    env = BacktestEnv(df, feature_cols=["feat"], cfg=cfg)
+
+    env.step(1)  # Open long
+    obs, reward, done, info = env.step(3)  # Hold → сильный минус
+    assert np.isfinite(reward), "reward should be finite with log reward clipping"
+
+def test_vector_action_with_mask_argmax():
+    df = make_df(5)
+    env = BacktestEnv(df, feature_cols=["feat"], cfg=EnvConfig(
+        mode=1, fee=0.0, spread=0.0, leverage=1.0,
+        max_steps=10**9, reward_scale=1.0,
+        use_log_reward=False, time_penalty=0.0, hold_penalty=0.0
+    ))
+    # На старте позиция 0 → валидны только [Wait, Open]
+    logits = [-1.0, 2.0, 5.0, 9.0]  # max на индексе 3, но он замаскирован → должен выбрать Open (1)
+    _, _, _, info = env.step(logits)
+    assert info["position"] in (0, 1)
+

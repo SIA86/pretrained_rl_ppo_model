@@ -152,7 +152,14 @@ def _step_single(
 
     # Возможность использовать логарифмическую доходность
     pnl_step = equity - prev_equity
-    core = np.log1p(pnl_step) if cfg.use_log_reward else pnl_step
+    # Лог-вознаграждение: защищаемся от домена log1p (x > -1)
+    if cfg.use_log_reward:
+        # Жёстко клипуем шаговую доходность снизу чуть выше -1
+        clipped = pnl_step if pnl_step > -0.999999 else -0.999999
+        core = np.log1p(clipped)
+    else:
+        core = pnl_step
+        
     reward = cfg.reward_scale * core
 
     return (
@@ -229,6 +236,7 @@ class BacktestEnv:
         self.entry_price = 0.0  # цена входа в позицию
         self.equity = 0.0  # накопленная доходность
         self.realized_pnl = 0.0  # реализованный PnL
+        self.done = False  # флаг завершения эпизода
         self.history: List[Dict] = []  # журнал событий
         return self.features[self.t]
 
@@ -240,9 +248,34 @@ class BacktestEnv:
             return np.array([1, 1, 0, 0], dtype=np.int8)
         return np.array([0, 0, 1, 1], dtype=np.int8)
 
-    def step(self, action: int) -> tuple:
+    def step(self, action) -> tuple:
+        # Запрещаем шаги после завершения эпизода
+        if getattr(self, "done", False):
+            # Возвращаем текущее наблюдение и нулевую награду
+            obs = self.features[self.t]
+            info = {
+                "equity": self.equity,
+                "realized_pnl": self.realized_pnl,
+                "unrealized_pnl": 0.0 if self.position == 0 else self.position * ((self.prices[self.t] - self.entry_price) / self.entry_price) * self.cfg.leverage,
+                "position": self.position,
+                "action_mask": self.action_mask(),
+            }
+            return obs, 0.0, True, info
+
         mask = self.action_mask()
-        if action < 0 or action >= len(mask) or not mask[action]:
+        # Поддержка как целочисленного действия, так и вектора логитов/оценок длиной 4
+        if isinstance(action, (list, tuple, np.ndarray)):
+            a = np.asarray(action, dtype=np.float64).reshape(-1)
+            if a.size == 4:
+                masked = np.where(mask.astype(bool), a, -np.inf)
+                if np.all(~np.isfinite(masked)):
+                    action = 0 if self.position == 0 else 3
+                else:
+                    action = int(np.nanargmax(masked))
+            else:
+                action = 0 if self.position == 0 else 3
+        # Валидация для скалярного действия
+        if not isinstance(action, (int, np.integer)) or action < 0 or action >= len(mask) or not mask[action]:
             action = 0 if self.position == 0 else 3
 
         (
@@ -266,6 +299,9 @@ class BacktestEnv:
             self.prices,
             self.cfg,
         )
+        # Обновляем флаг завершения
+        if self.t >= self.cfg.max_steps:
+            self.done = True
 
         # Цена на текущем шаге
         price = self.prices[self.t]
