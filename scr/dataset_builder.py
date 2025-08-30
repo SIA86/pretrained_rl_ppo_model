@@ -191,6 +191,8 @@ def _window_segment(
     seq_len: int,
     stride: int = 1,
     SW: Optional[np.ndarray] = None,
+    return_index: bool = False,
+    start_offset: int = 0,
 ):
     assert X.ndim == 2 and Y.ndim == 2 and M.ndim == 2 and W.ndim == 2 and R.ndim == 1
     N, D = X.shape
@@ -200,6 +202,9 @@ def _window_segment(
         zC = np.empty((0, C), np.float32)
         zR = np.empty((0,), np.float32)
         zSW = None if SW is None else np.empty((0,), np.float32)
+        if return_index:
+            zI = np.empty((0,), np.int64)
+            return zX, zC, zC, zC, zR, zSW, zI
         return zX, zC, zC, zC, zR, zSW
 
     starts = np.arange(0, N - seq_len + 1, dtype=np.int64)
@@ -233,18 +238,23 @@ def _window_segment(
         Rw = Rw[keep]
         if SWw is not None:
             SWw = SWw[keep]
+        if return_index:
+            idx_end = idx[:, -1][keep] + start_offset
     else:
         zX = np.empty((0, seq_len, D), np.float32)
         zC = np.empty((0, C), np.float32)
         zR = np.empty((0,), np.float32)
         zSW = None if SW is None else np.empty((0,), np.float32)
+        if return_index:
+            zI = np.empty((0,), np.int64)
+            return zX, zC, zC, zC, zR, zSW, zI
         return zX, zC, zC, zC, zR, zSW
 
     Kf = Xw.shape[0]
     assert Yw.shape == (Kf, C) and Mw.shape == (Kf, C) and Ww.shape == (Kf, C) and Rw.shape == (Kf,)
     if SWw is not None:
         assert SWw.shape == (Kf,)
-    return (
+    out = (
         Xw.astype(np.float32),
         Yw.astype(np.float32),
         Mw.astype(np.float32),
@@ -252,6 +262,9 @@ def _window_segment(
         Rw.astype(np.float32),
         None if SWw is None else SWw.astype(np.float32),
     )
+    if return_index:
+        out = out + (idx_end.astype(np.int64),)
+    return out
 
 
 def build_tf_dataset(
@@ -311,7 +324,7 @@ class DatasetBuilderForYourColumns:
     feature_names: Optional[List[str]] = None
     invfreq_: Optional[np.ndarray] = None
 
-    def fit_transform(self, df: pd.DataFrame):
+    def fit_transform(self, df: pd.DataFrame, return_indices: bool = False):
         X, feat_cols = extract_features(df, drop_cols=self.drop_cols)
         W, M, Y, R = build_W_M_Y_R_from_df(
             df, labels_from=self.labels_from, tau=self.tau, r_mode=self.r_mode
@@ -352,39 +365,43 @@ class DatasetBuilderForYourColumns:
             )
 
         def cut(Xs, Ys, Ms, Ws, Rs, start, end):
-            if SW_full is None:
-                return _window_segment(
-                    Xs[start:end],
-                    Ys[start:end],
-                    Ms[start:end],
-                    Ws[start:end],
-                    Rs[start:end],
-                    seq_len=self.seq_len,
-                    stride=self.stride,
-                    SW=None,
-                )
-            else:
-                return _window_segment(
-                    Xs[start:end],
-                    Ys[start:end],
-                    Ms[start:end],
-                    Ws[start:end],
-                    Rs[start:end],
-                    seq_len=self.seq_len,
-                    stride=self.stride,
-                    SW=SW_full[start:end],
-                )
+            kwargs = dict(
+                seq_len=self.seq_len,
+                stride=self.stride,
+                SW=None if SW_full is None else SW_full[start:end],
+                return_index=return_indices,
+                start_offset=start,
+            )
+            return _window_segment(
+                Xs[start:end],
+                Ys[start:end],
+                Ms[start:end],
+                Ws[start:end],
+                Rs[start:end],
+                **kwargs,
+            )
 
         tr = cut(Xn, Y, M, W, R, s0, s1)
         va = cut(Xn, Y, M, W, R, s1, s2)
         te = cut(Xn, Y, M, W, R, s2, s3)
 
-        (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr) = tr
-        (Xva, Yva, Mva, Wva, Rva, SWva) = va
-        (Xte, Yte, Mte, Wte, Rte, SWte) = te
+        if return_indices:
+            (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr, Itr) = tr
+            (Xva, Yva, Mva, Wva, Rva, SWva, Iva) = va
+            (Xte, Yte, Mte, Wte, Rte, SWte, Ite) = te
+        else:
+            (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr) = tr
+            (Xva, Yva, Mva, Wva, Rva, SWva) = va
+            (Xte, Yte, Mte, Wte, Rte, SWte) = te
 
         self.feature_names = feat_cols
 
+        if return_indices:
+            return {
+                "train": (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr, Itr),
+                "val": (Xva, Yva, Mva, Wva, Rva, SWva, Iva),
+                "test": (Xte, Yte, Mte, Wte, Rte, SWte, Ite),
+            }
         return {
             "train": (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr),
             "val": (Xva, Yva, Mva, Wva, Rva, SWva),
@@ -392,9 +409,9 @@ class DatasetBuilderForYourColumns:
         }
 
     def as_tf_datasets(self, splits):
-        (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr) = splits["train"]
-        (Xva, Yva, Mva, Wva, Rva, SWva) = splits["val"]
-        (Xte, Yte, Mte, Wte, Rte, SWte) = splits["test"]
+        (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr, *_) = splits["train"]
+        (Xva, Yva, Mva, Wva, Rva, SWva, *_) = splits["val"]
+        (Xte, Yte, Mte, Wte, Rte, SWte, *_) = splits["test"]
         _assert_shapes_align(Xtr, Ytr, Mtr, Wtr, Rtr, SWtr)
 
         ds_tr = build_tf_dataset(

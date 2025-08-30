@@ -7,6 +7,7 @@ import pytest
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from scr.backtest_env import BacktestEnv, EnvConfig
+from scr.backtest_env import run_backtest_with_logits
 
 
 def make_env(prices, **cfg_kwargs):
@@ -143,4 +144,13 @@ def test_vector_action_with_mask_argmax():
     logits = [-1.0, 2.0, 5.0, 9.0]  # max на индексе 3, но он замаскирован → должен выбрать Open (1)
     _, _, _, info = env.step(logits)
     assert info["position"] in (0, 1)
+
+
+def test_run_backtest_with_logits_executes_trade():
+    df = make_df(4, start=1.0, step=1.0)
+    logits = np.array([[0.0, 5.0, 0.0, 0.0], [0.0, 0.0, 5.0, 0.0]])
+    indices = np.array([1, 2])
+    env = run_backtest_with_logits(df, logits, indices)
+    log = env.logs()
+    assert log.iloc[-1]["equity"] == pytest.approx((4 - 3) / 3)
 
