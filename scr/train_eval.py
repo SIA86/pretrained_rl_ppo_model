@@ -45,15 +45,16 @@ class CosineWithWarmup:
 
     @tf.function
     def __call__(self, step: tf.Tensor) -> tf.Tensor:
-        step = tf.cast(step, tf.float32)
+        s_int = tf.cast(step, tf.int32)
+        s_mod = tf.math.floormod(s_int, tf.cast(self.total, tf.int32))
+        step = tf.cast(s_mod, tf.float32)
         warm = tf.cast(tf.maximum(self.warm, 1), tf.float32)
-        # linear warmup
+
         lr_warm = (
             self.base_lr * tf.minimum(step / warm, 1.0)
             if self.warm > 0
             else self.base_lr
         )
-        # cosine phase
         t = tf.clip_by_value(
             (step - warm) / tf.maximum(1.0, tf.cast(self.total - self.warm, tf.float32)),
             0.0,
@@ -87,7 +88,9 @@ class OneCycleLR:
 
     @tf.function
     def __call__(self, step: tf.Tensor) -> tf.Tensor:
-        s = tf.cast(step, tf.float32)
+        s_int = tf.cast(step, tf.int32)
+        s_mod = tf.math.floormod(s_int, tf.cast(self.total, tf.int32))
+        s = tf.cast(s_mod, tf.float32)
         up = tf.cast(self.up_steps, tf.float32)
         down = tf.cast(self.down_steps, tf.float32)
 
@@ -117,10 +120,25 @@ def _unpack_batch(batch: Any) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tenso
     W = R = SW = None
     if isinstance(y, (tuple, list)):
         y, *extra = y
-        if extra:
-            W = extra[0] if len(extra) > 0 else None
-            R = extra[1] if len(extra) > 1 else None
-            SW = extra[2] if len(extra) > 2 else None
+        if len(extra) == 1:
+            t = extra[0]
+            if t.shape.rank == 2 and t.shape[-1] == NUM_CLASSES:
+                W = t
+            else:
+                SW = t
+        elif len(extra) == 2:
+            a, b = extra
+            if a.shape.rank == 2 and a.shape[-1] == NUM_CLASSES:
+                W = a
+                if b.shape.rank == 1:
+                    R = b
+                else:
+                    SW = b
+            else:
+                R = a
+                SW = b
+        elif len(extra) >= 3:
+            W, R, SW = extra[:3]
     return x, m, y, W, R, SW
 
 
@@ -307,13 +325,14 @@ def validate_one_epoch(model: keras.Model, val_ds: tf.data.Dataset):
         total_acc += acc * bs
         total_cnt += bs
 
-        er_b = expected_return_metric(logits, mb, Wb, sample_w=SWb)
-        model_er_sum += er_b * bs
-        model_er_cnt += bs
+        if Wb is not None:
+            er_b = expected_return_metric(logits, mb, Wb, sample_w=SWb)
+            model_er_sum += er_b * bs
+            model_er_cnt += bs
 
-        oracle_b = oracle_expected_return_batch(Wb, mb, SWb)
-        oracle_er_sum += oracle_b * bs
-        oracle_er_cnt += bs
+            oracle_b = oracle_expected_return_batch(Wb, mb, SWb)
+            oracle_er_sum += oracle_b * bs
+            oracle_er_cnt += bs
 
         macro_f1, f1_vec = f1_per_class(yb, logits, mb, sample_w=SWb)
         f1_sum += f1_vec
@@ -562,8 +581,10 @@ def confusion_and_f1_on_dataset(model: keras.Model, ds: tf.data.Dataset):
     y_pred = []
     for (xb, mb), (yb, *rest) in ds:
         logits = model([xb, mb], training=False)
+        masked_logits = apply_action_mask(logits, mb)
         y_true.append(np.argmax(yb.numpy(), axis=1))
-        y_pred.append(np.argmax(logits.numpy(), axis=1))
+        y_pred.append(np.argmax(masked_logits.numpy(), axis=1))
+
     y_true = np.concatenate(y_true)
     y_pred = np.concatenate(y_pred)
 
@@ -655,13 +676,14 @@ def evaluate_dataset(model: keras.Model, ds: tf.data.Dataset):
         total_acc += acc * bs
         total_cnt += bs
 
-        er_b = expected_return_metric(logits, mb, Wb, sample_w=SWb)
-        model_er_sum += er_b * bs
-        model_er_cnt += bs
+        if Wb is not None:
+            er_b = expected_return_metric(logits, mb, Wb, sample_w=SWb)
+            model_er_sum += er_b * bs
+            model_er_cnt += bs
 
-        oracle_b = oracle_expected_return_batch(Wb, mb, SWb)
-        oracle_er_sum += oracle_b * bs
-        oracle_er_cnt += bs
+            oracle_b = oracle_expected_return_batch(Wb, mb, SWb)
+            oracle_er_sum += oracle_b * bs
+            oracle_er_cnt += bs
 
         macro_f1, f1_vec = f1_per_class(yb, logits, mb, sample_w=SWb)
         f1_sum += f1_vec
