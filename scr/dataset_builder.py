@@ -79,7 +79,7 @@ def _clean_masks(M: np.ndarray) -> np.ndarray:
 
 
 def extract_features(df: pd.DataFrame, drop_cols=None):
-    drop = set(drop_cols or [])
+    drop = set(drop_cols or [])<<<<<<< codex/create-dataset_builder.py-with-data-processing-functions
     exclude_prefixes = ("Q_", "Mask_", "A_")
     cols = [
         c
@@ -127,13 +127,17 @@ def build_W_M_Y_R_from_df(
     else:
         Y = df[[A_COLS[a] for a in ACTIONS]].to_numpy(np.float32)
         Y = _clean_soft_labels(Y * M)
-        Y = _clean_soft_labels(Y)
 
     if r_mode == "teacher":
         very_neg = -1e9
         logits_for_R = np.where(M > 0.0, W, very_neg)
         a_star = np.argmax(logits_for_R, axis=1)
-        R = W[np.arange(len(W)), a_star].astype(np.float32)
+        # choose teacher's action only among valid ones; no valid -> R=0
+        R = np.where(
+            row_valid,
+            W[np.arange(len(W)), a_star],
+            0.0,
+        ).astype(np.float32)
     else:
         R = np.max(np.where(M > 0.0, W, -np.inf), axis=1)
         R = np.nan_to_num(R, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
@@ -261,11 +265,12 @@ def build_tf_dataset(
         ds = tf.data.Dataset.from_tensor_slices(
             ((Xw, Mw), (Yw, Ww, Rw, SW.astype(np.float32).reshape(-1)))
         )
+    if cache:
+        # cache before shuffle so each epoch reshuffles freshly
+        ds = ds.cache()
     if shuffle:
         ds = ds.shuffle(min(len(Xw), 100_000), reshuffle_each_iteration=True)
     ds = ds.batch(batch_size)
-    if cache:
-        ds = ds.cache()
     ds = ds.prefetch(tf.data.AUTOTUNE)
     return ds
 

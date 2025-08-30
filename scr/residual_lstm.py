@@ -72,6 +72,7 @@ def apply_action_mask(logits: tf.Tensor, mask: tf.Tensor, very_neg: float = VERY
     return tf.where(m > 0.0, logits, vneg)
 
 
+
 def masked_logits_and_probs(logits: tf.Tensor, mask: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
     """Return masked logits and corresponding probabilities."""
 
@@ -80,7 +81,7 @@ def masked_logits_and_probs(logits: tf.Tensor, mask: tf.Tensor) -> tuple[tf.Tens
     probs = tf.nn.softmax(masked, axis=-1)
     # if all actions invalid, return zeros to avoid NaNs
     probs = tf.where(has_valid, probs, tf.zeros_like(probs, dtype=logits.dtype))
-    return masked, probs
+
 
 
 def masked_categorical_crossentropy(
@@ -95,6 +96,7 @@ def masked_categorical_crossentropy(
     dtype = logits.dtype
     mask = tf.cast(mask, dtype)
     y_true = tf.cast(y_true, dtype)
+
     masked_logits = apply_action_mask(logits, mask)
     log_probs = tf.nn.log_softmax(masked_logits, axis=-1)
 
@@ -112,6 +114,8 @@ def masked_categorical_crossentropy(
         denom = tf.reduce_sum(sw * tf.cast(has_label, dtype)) + eps
     else:
         denom = tf.reduce_sum(tf.cast(has_label, dtype)) + eps
+
+
     return tf.reduce_sum(per_sample) / denom
 
 
@@ -141,4 +145,5 @@ def masked_accuracy(
     else:
         num = tf.reduce_sum(correct)
         den = tf.reduce_sum(tf.cast(has_label, tf.float32)) + 1e-8
+
         return num / den
