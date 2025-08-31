@@ -482,6 +482,8 @@ def soft_signal_labels_gaussian(
     * Размываем только Open/Close; Hold/Wait — дополняют вероятности до 1.
     * В позиции базовая метка = Hold, однако MAE-штраф уменьшает вес Hold
       в пользу Close пропорционально глубине просадки.
+    * В результате добавляется колонка ``Pos`` — смоделированная позиция
+      (one-side) для дальнейшей визуализации.
     """
     need = {'Open', 'High', 'Low', 'Signal_Rule'}
     miss = need - set(df.columns)
@@ -552,6 +554,7 @@ def soft_signal_labels_gaussian(
     a_hold[mask] /= total[mask]
     a_wait[mask] /= total[mask]
 
+    out["Pos"] = pos.astype(np.int8)
     out["A_Open"] = a_open.astype(np.float32)
     out["A_Close"] = a_close.astype(np.float32)
     out["A_Hold"] = a_hold.astype(np.float32)
