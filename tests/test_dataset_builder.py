@@ -126,3 +126,31 @@ def test_fit_transform_returns_indices():
     assert idx[0] == 19
 
 
+def test_class_balance_weights_excludes_unused_rows():
+    n = 10
+    classes = [0, 1, 2, 3, 0, 1, 0, 0, 1, 2]
+    data = {
+        "f1": np.arange(n, dtype=np.float32),
+        "f2": np.arange(n, dtype=np.float32),
+    }
+    for a in ACTIONS:
+        data[f"Q_{a}"] = np.zeros(n, dtype=np.float32)
+        data[f"Mask_{a}"] = np.ones(n, dtype=np.float32)
+        data[f"A_{a}"] = np.zeros(n, dtype=np.float32)
+    for i, cls in enumerate(classes):
+        data[f"A_{ACTIONS[cls]}"][i] = 1.0
+    df = pd.DataFrame(data)
+
+    builder = DatasetBuilderForYourColumns(
+        seq_len=3, norm="none", labels_from="a", sw_mode="ClassBalance"
+    )
+    splits = builder.fit_transform(df)
+    SWtr = splits["train"][5]
+
+    expected_invfreq = np.array([2.5, 5.0, 5.0, 5.0], dtype=np.float32)
+    expected_sw = np.array([1.25, 1.25, 0.625, 1.25, 0.625], dtype=np.float32)
+
+    assert np.allclose(builder.invfreq_, expected_invfreq)
+    assert np.allclose(SWtr, expected_sw)
+
+

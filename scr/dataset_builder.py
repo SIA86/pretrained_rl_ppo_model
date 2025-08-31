@@ -66,10 +66,10 @@ def _clean_soft_labels(Y: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     Y = np.nan_to_num(Y, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
     Y = np.clip(Y, 0.0, 1.0, out=Y)
     s = Y.sum(axis=1, keepdims=True)
-    ok = s > eps
+    ok = (s > eps).squeeze(1)
     Y[ok] = Y[ok] / s[ok]
     if (~ok).any():
-        Y[~ok.squeeze(1)] = 1.0 / Y.shape[1]
+        Y[~ok] = 1.0 / Y.shape[1]
     return Y
 
 
@@ -332,6 +332,7 @@ class DatasetBuilderForYourColumns:
 
         s0, s1, s2, s3 = _split_indices(len(X), ratios=self.splits)
         train_slice = slice(s0, s1)
+        sw_train_slice = slice(train_slice.start + self.seq_len - 1, train_slice.stop)
 
         if self.norm == "none":
             Xn = X
@@ -353,13 +354,15 @@ class DatasetBuilderForYourColumns:
                     df[self.sw_volume_col].to_numpy(), mode=self.sw_volume_mode
                 )
             elif self.sw_mode == "ClassBalance":
-                SW_full, invfreq = gen_sw_class_balancing(Y, train_slice=train_slice)
+                SW_full, invfreq = gen_sw_class_balancing(
+                    Y, train_slice=sw_train_slice
+                )
                 self.invfreq_ = invfreq
             else:
                 raise ValueError("sw_mode ∈ {None,'R','Volume','ClassBalance'}")
             SW_full = normalize_and_clip_weights(
                 SW_full,
-                train_slice=train_slice,
+                train_slice=sw_train_slice,
                 wmin=self.sw_clip_min,
                 wmax=self.sw_clip_max,
             )
