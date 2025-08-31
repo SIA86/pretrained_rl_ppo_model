@@ -113,8 +113,10 @@ def plot_reliability_diagram(probs: np.ndarray, y_true: np.ndarray, n_bins: int 
 def _collect_validation_arrays(val_ds: tf.data.Dataset, num_classes: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Materialise the validation dataset to NumPy arrays."""
 
+    from .train_eval import _unpack_batch
     Xb_list, Mb_list, Y_oh_list = [], [], []
-    for (xb, mb), (yb, *_) in val_ds:
+    for batch in val_ds:
+        xb, mb, yb, *_ = _unpack_batch(batch)
         xb_np = xb.numpy()
         mb_np = mb.numpy()
         yb_np = yb.numpy()
@@ -153,7 +155,8 @@ def calibrate_model(
     num_classes = int(model.output_shape[-1])
     Xb_val, Mb_val, Y_val_onehot, Y_val_int = _collect_validation_arrays(val_ds, num_classes)
 
-    probe = model.predict((Xb_val[:256], Mb_val[:256]), verbose=0)
+    has_mask = isinstance(model.input_shape, list) and len(model.input_shape) == 2
+    probe = model.predict((Xb_val[:256], Mb_val[:256]) if has_mask else Xb_val[:256], verbose=0)
 
     def looks_like_probs(a: np.ndarray) -> bool:
         if not np.isfinite(a).all():
@@ -164,14 +167,19 @@ def calibrate_model(
     is_probs = looks_like_probs(probe) if isinstance(probe, np.ndarray) else False
 
     inp_x = tf.keras.Input(shape=Xb_val.shape[1:], name="xb")
-    inp_m = tf.keras.Input(shape=Mb_val.shape[1:], name="mb")
-    raw_out = model([inp_x, inp_m], training=False)
+    if has_mask:
+        inp_m = tf.keras.Input(shape=Mb_val.shape[1:], name="mb")
+        raw_out = model([inp_x, inp_m], training=False)
+        base_inputs = [inp_x, inp_m]
+    else:
+        raw_out = model(inp_x, training=False)
+        base_inputs = [inp_x]
 
     def to_logits(t: tf.Tensor) -> tf.Tensor:
         return tf.math.log(tf.clip_by_value(t, 1e-8, 1.0))
 
     out_logits = tf.keras.layers.Lambda(to_logits, name="to_logits")(raw_out) if is_probs else raw_out
-    base_logits_model = tf.keras.Model([inp_x, inp_m], out_logits, name="base_logits_model")
+    base_logits_model = tf.keras.Model(base_inputs, out_logits, name="base_logits_model")
 
     cal_logits = TemperatureScaling(init_T=init_T, per_class=per_class)(base_logits_model.outputs[0])
     cal_model = tf.keras.Model(base_logits_model.inputs, cal_logits, name="calibrated_model")
@@ -192,8 +200,8 @@ def calibrate_model(
     callbacks = [tf.keras.callbacks.EarlyStopping(monitor="nll", patience=5, restore_best_weights=True)]
     cal_model.fit(val_np_ds, epochs=100, verbose=0, callbacks=callbacks)
 
-    logits_before = base_logits_model.predict((Xb_val, Mb_val), batch_size=batch_size, verbose=0)
-    logits_after = cal_model.predict((Xb_val, Mb_val), batch_size=batch_size, verbose=0)
+    logits_before = base_logits_model.predict((Xb_val, Mb_val) if has_mask else Xb_val, batch_size=batch_size, verbose=0)
+    logits_after = cal_model.predict((Xb_val, Mb_val) if has_mask else Xb_val, batch_size=batch_size, verbose=0)
 
     probs_before = tf.nn.softmax(logits_before).numpy()
     probs_after = tf.nn.softmax(logits_after).numpy()
