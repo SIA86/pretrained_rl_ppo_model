@@ -155,8 +155,15 @@ def calibrate_model(
     num_classes = int(model.output_shape[-1])
     Xb_val, Mb_val, Y_val_onehot, Y_val_int = _collect_validation_arrays(val_ds, num_classes)
 
+    n = (Xb_val.shape[0] // batch_size) * batch_size
+    Xb_val = Xb_val[:n]
+    Mb_val = Mb_val[:n]
+    Y_val_onehot = Y_val_onehot[:n]
+    Y_val_int = Y_val_int[:n]
+
     has_mask = isinstance(model.input_shape, list) and len(model.input_shape) == 2
-    probe = model.predict((Xb_val[:256], Mb_val[:256]) if has_mask else Xb_val[:256], verbose=0)
+    probe_inputs = (Xb_val[:batch_size], Mb_val[:batch_size]) if has_mask else Xb_val[:batch_size]
+    probe = model.predict(probe_inputs, batch_size=batch_size, verbose=0)
 
     def looks_like_probs(a: np.ndarray) -> bool:
         if not np.isfinite(a).all():
@@ -194,7 +201,7 @@ def calibrate_model(
     inputs = (Xb_val, Mb_val) if has_mask else Xb_val
     val_np_ds = (
         tf.data.Dataset.from_tensor_slices((inputs, Y_val_onehot))
-        .batch(batch_size)
+        .batch(batch_size, drop_remainder=True)
         .prefetch(tf.data.AUTOTUNE)
     )
 
