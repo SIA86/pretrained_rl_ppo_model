@@ -478,7 +478,6 @@ def soft_signal_labels_gaussian(
     mae_lambda: float = 0.0,
 ) -> pd.DataFrame:
     """Строит мягкие action-метки ``A_*`` из ``Signal_Rule``.
-
     * ``Signal_Rule``: +1 — вход, -1 — выход, 0 — Hold/Wait в зависимости от позиции.
     * Размываем только Open/Close; Hold/Wait — дополняют вероятности до 1.
     * В позиции базовая метка = Hold, однако MAE-штраф уменьшает вес Hold
@@ -513,12 +512,13 @@ def soft_signal_labels_gaussian(
     kernel /= kernel.sum()
     a_open = np.convolve(open_spike, kernel, mode="same")
     a_close = np.convolve(close_spike, kernel, mode="same")
-
     comp = np.maximum(0.0, 1.0 - a_open - a_close)
     a_hold = comp.copy()
     a_wait = comp.copy()
     a_hold[flat] = 0.0
     a_wait[inpos] = 0.0
+
+
 
     if mae_lambda > 0.0:
         mae = np.zeros(n, dtype=np.float64)
@@ -556,4 +556,5 @@ def soft_signal_labels_gaussian(
     out["A_Close"] = a_close.astype(np.float32)
     out["A_Hold"] = a_hold.astype(np.float32)
     out["A_Wait"] = a_wait.astype(np.float32)
+
     return out.reset_index(drop=True)
