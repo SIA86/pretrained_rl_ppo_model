@@ -119,9 +119,9 @@ def enrich_q_labels_trend_one_side(
     # для 'tdlambda'
     H_max: int = 60,
     lam: float = 0.9,
-    # комиссии (в bps → 1e-4)
-    fee_bps: float = 2.0,
-    slippage_bps: float = 1.0,
+    # комиссии и проскальзывание (доли, например 0.0002 = 2 bps)
+    fee: float = 0.0002,
+    slippage: float = 0.0001,
     # MAE-штраф (по желанию) — применяется ТОЛЬКО к Hold/Open (см. ниже)
     use_mae_penalty: bool = False,
     mae_lambda: float = 0.0,           # 0.0 = нет штрафа
@@ -182,8 +182,8 @@ def enrich_q_labels_trend_one_side(
     exec_next_open = np.full(n, np.nan); exec_next_open[:-1] = Open[1:]
 
     # комиссии
-    c_open  = (fee_bps + slippage_bps) * 1e-4
-    c_close = (fee_bps + slippage_bps) * 1e-4
+    c_open  = fee + slippage
+    c_close = fee + slippage
 
     # маски состояний
     pos_now = pos
