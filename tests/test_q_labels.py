@@ -6,7 +6,11 @@ import pandas as pd
 import pytest
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from scr.q_labels_matching import next_exit_exec_arrays, enrich_q_labels_trend_one_side
+from scr.q_labels_matching import (
+    next_exit_exec_arrays,
+    enrich_q_labels_trend_one_side,
+    soft_signal_labels_gaussian,
+)
 
 # ---------------------------
 # Вспомогательные генераторы
@@ -257,3 +261,38 @@ def test_nan_inputs_propagate_to_q_and_masks():
     assert out.loc[0, 'Mask_Open'] == 0 or np.isnan(out.loc[0, 'Q_Open'])
     # На последних барах без будущего горизонта маска Open=0
     assert out.loc[len(df)-1, 'Mask_Open'] == 0
+
+
+# ---------------------------
+# soft_signal_labels_gaussian
+# ---------------------------
+
+
+def test_soft_labels_gaussian_blur_and_normalisation():
+    """Gaussian blur распространяет метку на соседние бары, сумма = 1."""
+    open_px = np.array([100., 101., 102., 103., 104.])
+    sig = np.array([0, 1, 0, -1, 0])
+    df = _mk_df(open_px, sig=sig)
+
+    out = soft_signal_labels_gaussian(df, blur_window=1, blur_sigma=1.0, mae_lambda=0.0)
+
+    # Размытый Open влияет на соседний бар t=0
+    assert out.loc[0, 'Y_Open'] > 0.0
+    # Размытый Close влияет на бар t=2 (до выхода)
+    assert out.loc[2, 'Y_Close'] > 0.0
+    # Каждая строка нормализована
+    sums = out[['Y_Open', 'Y_Close', 'Y_Hold', 'Y_Wait']].sum(axis=1)
+    np.testing.assert_allclose(sums, 1.0, rtol=1e-7)
+
+
+def test_soft_labels_mae_penalty_shifts_to_close():
+    """MAE-штраф увеличивает вес Close относительно Hold."""
+    open_px = np.array([100., 90., 80., 70., 60., 60.])
+    sig = np.array([1, 0, 0, 0, -1, 0])
+    df = _mk_df(open_px, sig=sig)
+
+    out_pen = soft_signal_labels_gaussian(df, blur_window=1, blur_sigma=1.0, mae_lambda=0.5)
+    out_nopen = soft_signal_labels_gaussian(df, blur_window=1, blur_sigma=1.0, mae_lambda=0.0)
+
+    # t=2: в позиции и в просадке, вес Close должен вырасти
+    assert out_pen.loc[2, 'Y_Close'] > out_nopen.loc[2, 'Y_Close']
