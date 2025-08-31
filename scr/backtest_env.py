@@ -73,7 +73,7 @@ def _step_single(
     """Векторизованное выполнение одного шага симуляции.
 
     Параметр ``action`` принимает значения:
-    0=Wait, 1=Open, 2=Close, 3=Hold.
+    0=Open, 1=Close, 2=Hold, 3=Wait.
 
     Возвращает кортеж со всеми обновлёнными состояниями и вспомогательной
     информацией, которая используется для логирования и расчёта метрик.
@@ -111,7 +111,7 @@ def _step_single(
 
     allowed_side = cfg.mode  # допустимое направление торговли
 
-    if action == 1:
+    if action == 0:
         # Открыть позицию
         if position == 0:
             exec_price = _exec_price(next_price, allowed_side, cfg.spread)
@@ -120,7 +120,7 @@ def _step_single(
             opened = True
             fee = _fee_notional(exec_price, cfg.leverage, cfg.fee)
             realized_pnl -= fee
-    elif action == 2:
+    elif action == 1:
         # Закрыть имеющуюся позицию
         if position != 0:
             exec_price = _exec_price(next_price, -position, cfg.spread)
@@ -132,10 +132,11 @@ def _step_single(
             position = 0
             entry_price = 0.0
             closed = True
-    else:
-        # Оставаться вне позиции/удерживать позицию
-        if position == 0 and cfg.hold_penalty > 0.0:
+    elif action == 3:
+        # Оставаться вне позиции (Wait)
+        if cfg.hold_penalty > 0.0:
             realized_pnl -= cfg.hold_penalty
+    # action == 2 -> Hold: ничего не делаем
 
     if prev_position != 0 and cfg.time_penalty > 0.0:
         realized_pnl -= cfg.time_penalty
@@ -243,10 +244,10 @@ class BacktestEnv:
     def action_mask(self) -> np.ndarray:
         """Маска допустимых действий.
 
-        Порядок действий: 0=Wait, 1=Open, 2=Close, 3=Hold."""
+        Порядок действий: 0=Open, 1=Close, 2=Hold, 3=Wait."""
         if self.position == 0:
-            return np.array([1, 1, 0, 0], dtype=np.int8)
-        return np.array([0, 0, 1, 1], dtype=np.int8)
+            return np.array([1, 0, 0, 1], dtype=np.int8)
+        return np.array([0, 1, 1, 0], dtype=np.int8)
 
     def step(self, action) -> tuple:
         # Запрещаем шаги после завершения эпизода
@@ -269,14 +270,14 @@ class BacktestEnv:
             if a.size == 4:
                 masked = np.where(mask.astype(bool), a, -np.inf)
                 if np.all(~np.isfinite(masked)):
-                    action = 0 if self.position == 0 else 3
+                    action = 3 if self.position == 0 else 2
                 else:
                     action = int(np.nanargmax(masked))
             else:
-                action = 0 if self.position == 0 else 3
+                action = 3 if self.position == 0 else 2
         # Валидация для скалярного действия
         if not isinstance(action, (int, np.integer)) or action < 0 or action >= len(mask) or not mask[action]:
-            action = 0 if self.position == 0 else 3
+            action = 3 if self.position == 0 else 2
 
         (
             self.t,
@@ -510,7 +511,7 @@ def run_backtest_with_logits(
     env = BacktestEnv(df_slice, feature_cols=feature_cols, price_col=price_col, cfg=cfg)
     env.reset()
 
-    actions = [0] * (end - start + 1)
+    actions = [3] * (end - start + 1)
     for logit, idx in zip(logits, indices):
         actions[int(idx) - start] = logit
 
