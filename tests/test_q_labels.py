@@ -284,6 +284,11 @@ def test_soft_labels_gaussian_blur_and_normalisation():
     sums = out[['A_Open', 'A_Close', 'A_Hold', 'A_Wait']].sum(axis=1)
     np.testing.assert_allclose(sums, 1.0, rtol=1e-7)
 
+    # Смоделированная позиция доступна
+    assert 'Pos' in out.columns
+    expected_pos = np.array([0, 0, 1, 1, 0], dtype=np.int8)
+    np.testing.assert_array_equal(out['Pos'].to_numpy(np.int8), expected_pos)
+
 
 def test_soft_labels_mae_penalty_shifts_to_close():
     """MAE-штраф увеличивает вес Close относительно Hold."""
@@ -296,3 +301,8 @@ def test_soft_labels_mae_penalty_shifts_to_close():
 
     # t=2: в позиции и в просадке, вес Close должен вырасти
     assert out_pen.loc[2, 'A_Close'] > out_nopen.loc[2, 'A_Close']
+
+    # Позиция совпадает с ожидаемой
+    assert 'Pos' in out_pen.columns
+    expected_pos = np.array([0, 1, 1, 1, 1, 0], dtype=np.int8)
+    np.testing.assert_array_equal(out_pen['Pos'].to_numpy(np.int8), expected_pos)
