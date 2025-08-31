@@ -500,7 +500,9 @@ def run_backtest_with_logits(
     start = int(indices[0])
     end = int(indices[-1])
     if end + 1 >= len(df):
-        raise ValueError("DataFrame shorter than required for last action")
+        end = len(df) - 2
+        logits = logits[: end - start + 1]
+        indices = indices[: end - start + 1]
 
     df_slice = df.iloc[start : end + 2].copy()
     env = BacktestEnv(df_slice, feature_cols=feature_cols, price_col=price_col, cfg=cfg)

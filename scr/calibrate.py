@@ -191,8 +191,9 @@ def calibrate_model(
         metrics=[tf.keras.metrics.CategoricalCrossentropy(from_logits=True, name="nll")],
     )
 
+    inputs = (Xb_val, Mb_val) if has_mask else Xb_val
     val_np_ds = (
-        tf.data.Dataset.from_tensor_slices(((Xb_val, Mb_val), Y_val_onehot))
+        tf.data.Dataset.from_tensor_slices((inputs, Y_val_onehot))
         .batch(batch_size)
         .prefetch(tf.data.AUTOTUNE)
     )
