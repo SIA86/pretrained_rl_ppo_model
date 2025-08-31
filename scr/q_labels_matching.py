@@ -479,9 +479,13 @@ def soft_signal_labels_gaussian(
 ) -> pd.DataFrame:
     """Строит мягкие action-метки ``A_*`` из ``Signal_Rule``.
     * ``Signal_Rule``: +1 — вход, -1 — выход, 0 — Hold/Wait в зависимости от позиции.
-    * Размываем только Open/Close; Hold/Wait — дополняют вероятности до 1.
+    * Размытие гауссом действует ТОЛЬКО слева от сигнала: веса Open/Close
+      монотонно растут к событию и достигают 0.9 в точке сигнала.
+    * Hold/Wait дополняют вероятности до 1, убывая внутри окна.
     * В позиции базовая метка = Hold, однако MAE-штраф уменьшает вес Hold
       в пользу Close пропорционально глубине просадки.
+    * В результате добавляется колонка ``Pos`` — смоделированная позиция
+      (one-side) для дальнейшей визуализации.
     """
     need = {'Open', 'High', 'Low', 'Signal_Rule'}
     miss = need - set(df.columns)
@@ -502,21 +506,35 @@ def soft_signal_labels_gaussian(
     inpos = pos != 0
     flat = ~inpos
 
-    open_spike = np.zeros(n, dtype=np.float64)
-    close_spike = np.zeros(n, dtype=np.float64)
-    open_spike[buy_sig & flat] = 1.0
-    close_spike[sell_sig & inpos] = 1.0
+    offsets = np.arange(blur_window + 1)
+    kernel = np.exp(-0.5 * (offsets / blur_sigma) ** 2)
+    kernel /= kernel[0]
+    weights = 0.9 * kernel
 
-    rng = np.arange(-blur_window, blur_window + 1)
-    kernel = np.exp(-0.5 * (rng / blur_sigma) ** 2)
-    kernel /= kernel.sum()
-    a_open = np.convolve(open_spike, kernel, mode="same")
-    a_close = np.convolve(close_spike, kernel, mode="same")
-    comp = np.maximum(0.0, 1.0 - a_open - a_close)
-    a_hold = comp.copy()
-    a_wait = comp.copy()
-    a_hold[flat] = 0.0
-    a_wait[inpos] = 0.0
+    a_open = np.zeros(n, dtype=np.float64)
+    a_close = np.zeros(n, dtype=np.float64)
+    a_hold = inpos.astype(np.float64)
+    a_wait = flat.astype(np.float64)
+
+    open_idx = np.where(buy_sig & flat)[0]
+    for i in open_idx:
+        for k, w in enumerate(weights):
+            j = i - k
+            if j < 0 or not flat[j]:
+                break
+            if w > a_open[j]:
+                a_open[j] = w
+                a_wait[j] = 1.0 - w
+
+    close_idx = np.where(sell_sig & inpos)[0]
+    for i in close_idx:
+        for k, w in enumerate(weights):
+            j = i - k
+            if j < 0 or not inpos[j]:
+                break
+            if w > a_close[j]:
+                a_close[j] = w
+                a_hold[j] = 1.0 - w
 
 
 
@@ -552,6 +570,7 @@ def soft_signal_labels_gaussian(
     a_hold[mask] /= total[mask]
     a_wait[mask] /= total[mask]
 
+    out["Pos"] = pos.astype(np.int8)
     out["A_Open"] = a_open.astype(np.float32)
     out["A_Close"] = a_close.astype(np.float32)
     out["A_Hold"] = a_hold.astype(np.float32)
