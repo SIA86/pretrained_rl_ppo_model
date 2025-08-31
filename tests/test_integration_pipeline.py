@@ -68,3 +68,6 @@ def test_full_pipeline(tmp_path):
     assert env.history
     log = env.logs()
     assert np.isfinite(log["equity"]).all()
+    report = env.metrics_report()
+    assert "Equity" in report and "nan" not in report.lower()
+
