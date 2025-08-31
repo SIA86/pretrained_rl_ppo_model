@@ -121,16 +121,17 @@ def plot_enriched_actions_one_side(
     assume_exec_next_bar: bool = True,
 ) -> None:
     """Plot price with strategy signals and best actions.
-
-    ``enriched_df`` must contain price columns and ``Pos`` plus either
-    Q-labels (``Q_*``) or action probabilities (``A_*``).
+    ``enriched_df`` must contain price columns and either ``Q_*`` or
+    ``A_*`` action data. Column ``Pos`` is required only when
+    ``show_reference`` is ``True``.
     """
     cols = set(enriched_df.columns)
-    need_base = {"Open", "High", "Low", "Close", "Pos"}
+    need_base = {"Open", "High", "Low", "Close"}
     miss = need_base - cols
     if miss:
         raise ValueError(f"missing columns: {sorted(miss)}")
-
+    if show_reference and "Pos" not in cols:
+        raise ValueError("missing columns: ['Pos']")
     need_q = {"Q_Open", "Q_Close", "Q_Hold", "Q_Wait"}
     need_a = {"A_Open", "A_Close", "A_Hold", "A_Wait"}
     has_q = need_q.issubset(cols)

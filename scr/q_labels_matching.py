@@ -487,7 +487,7 @@ def soft_signal_labels_gaussian(
     * В результате добавляется колонка ``Pos`` — смоделированная позиция
       (one-side) для дальнейшей визуализации.
     """
-    need = {'Open', 'High', 'Low', 'Signal_Rule'}
+    need = {'Open', 'High', 'Low', 'Close', 'Signal_Rule'}
     miss = need - set(df.columns)
     if miss:
         raise ValueError(f"нет колонок: {sorted(miss)}")

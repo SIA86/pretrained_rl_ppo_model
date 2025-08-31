@@ -47,4 +47,23 @@ def test_plot_with_action_labels(monkeypatch):
         }
     )
     plot_enriched_actions_one_side(df, start=0, end=len(df))
+    
+
+def test_plot_without_pos(monkeypatch):
+    monkeypatch.setattr("matplotlib.pyplot.show", lambda: None)
+    df = pd.DataFrame(
+        {
+            "Open": [1, 2, 3],
+            "High": [1, 2, 3],
+            "Low": [1, 2, 3],
+            "Close": [1, 2, 3],
+            "A_Open": [0.5, 0.2, 0.1],
+            "A_Close": [0.2, 0.3, 0.4],
+            "A_Hold": [0.2, 0.3, 0.3],
+            "A_Wait": [0.1, 0.2, 0.2],
+        }
+    )
+    plot_enriched_actions_one_side(
+        df, start=0, end=len(df), show_reference=False
+    )
 
