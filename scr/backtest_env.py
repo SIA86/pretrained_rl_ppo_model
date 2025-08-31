@@ -349,7 +349,7 @@ class BacktestEnv:
         """Сохранить журнал событий на диск."""
         self.logs().to_csv(path, index=False)
 
-    def plot(self):
+    def plot(self, title: Optional[str] = None):
         """Построить набор диагностических графиков по результатам симуляции."""
 
         # Получаем журнал событий в виде DataFrame
@@ -357,6 +357,8 @@ class BacktestEnv:
 
         # Создаём четыре подграфика: цена, индикатор позиции, реализованный PnL и equity
         fig, ax = plt.subplots(4, 1, sharex=True, figsize=(10, 8))
+        if title:
+            fig.suptitle(title)
 
         # -----------------------------------------------------
         # 1) График цены с пометками точек входа/выхода
