@@ -108,8 +108,23 @@ def build_W_M_Y_R_from_df(
 ):
     """Extract arrays W, M, Y and R from a DataFrame."""
 
-    W_raw = df[[Q_COLS[a] for a in ACTIONS]].to_numpy(np.float32)
-    M_raw = df[[MASK_COLS[a] for a in ACTIONS]].to_numpy(np.float32)
+    cols = set(df.columns)
+
+    if all(Q_COLS[a] in cols for a in ACTIONS):
+        W_raw = df[[Q_COLS[a] for a in ACTIONS]].to_numpy(np.float32)
+    else:
+        W_raw = np.zeros((len(df), NUM_CLASSES), dtype=np.float32)
+
+    if all(MASK_COLS[a] in cols for a in ACTIONS):
+        M_raw = df[[MASK_COLS[a] for a in ACTIONS]].to_numpy(np.float32)
+    elif "Pos" in cols:
+        pos = df["Pos"].to_numpy()
+        inpos = pos != 0
+        flat = ~inpos
+        M_raw = np.column_stack([flat, inpos, inpos, flat]).astype(np.float32)
+    else:
+        M_raw = np.ones((len(df), NUM_CLASSES), dtype=np.float32)
+
     M_raw = _clean_masks(M_raw)
 
     W, M, row_valid = _sanitize_W_M(W_raw, M_raw)

@@ -120,25 +120,30 @@ def plot_enriched_actions_one_side(
     indicators_panels: dict | None = None,
     assume_exec_next_bar: bool = True,
 ) -> None:
-    """Plot price with strategy signals and best actions based on Q labels.
+    """Plot price with strategy signals and best actions.
 
-    ``enriched_df`` must contain columns:
-    ['Open','High','Low','Close','Pos','Q_Open','Q_Close','Q_Hold','Q_Wait'].
+    ``enriched_df`` must contain price columns and either ``Q_*`` or
+    ``A_*`` action data. Column ``Pos`` is required only when
+    ``show_reference`` is ``True``.
     """
-    need = {
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Pos",
-        "Q_Open",
-        "Q_Close",
-        "Q_Hold",
-        "Q_Wait",
-    }
-    miss = need - set(enriched_df.columns)
+    cols = set(enriched_df.columns)
+    need_base = {"Open", "High", "Low", "Close"}
+    miss = need_base - cols
     if miss:
         raise ValueError(f"missing columns: {sorted(miss)}")
+
+    if show_reference and "Pos" not in cols:
+        raise ValueError("missing columns: ['Pos']")
+
+    need_q = {"Q_Open", "Q_Close", "Q_Hold", "Q_Wait"}
+    need_a = {"A_Open", "A_Close", "A_Hold", "A_Wait"}
+    has_q = need_q.issubset(cols)
+    has_a = need_a.issubset(cols)
+    if not (has_q or has_a):
+        missing_q = sorted(need_q - cols)
+        missing_a = sorted(need_a - cols)
+        raise ValueError(f"missing columns: {missing_q} or {missing_a}")
+    prefix = "Q_" if has_q else "A_"
 
     if end is None:
         end = len(enriched_df)
@@ -259,10 +264,10 @@ def plot_enriched_actions_one_side(
         _candles(ax_actions, t, o, h, l, c, alpha=0.35)
         ax_actions.grid(alpha=0.25)
 
-        q_open = df["Q_Open"].to_numpy(float)
-        q_close = df["Q_Close"].to_numpy(float)
-        q_hold = df["Q_Hold"].to_numpy(float)
-        q_wait = df["Q_Wait"].to_numpy(float)
+        q_open = df[f"{prefix}Open"].to_numpy(float)
+        q_close = df[f"{prefix}Close"].to_numpy(float)
+        q_hold = df[f"{prefix}Hold"].to_numpy(float)
+        q_wait = df[f"{prefix}Wait"].to_numpy(float)
 
         qs = np.vstack(
             [

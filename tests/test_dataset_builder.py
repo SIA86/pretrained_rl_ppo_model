@@ -80,6 +80,31 @@ def test_oracle_R_all_zero_is_zero():
     assert R.shape == (1,) and R[0] == 0.0
 
 
+def test_build_W_M_Y_R_from_df_accepts_A_and_pos():
+    df = pd.DataFrame(
+        {
+            "Pos": [0, 0, 1, 1],
+            "A_Open": [0.7, 0.6, 0.1, 0.2],
+            "A_Close": [0.1, 0.2, 0.6, 0.5],
+            "A_Hold": [0.1, 0.1, 0.2, 0.2],
+            "A_Wait": [0.1, 0.1, 0.1, 0.1],
+        }
+    )
+    W, M, Y, R = build_W_M_Y_R_from_df(df, labels_from="a")
+    assert W.shape == M.shape == Y.shape == (4, 4)
+    expected_M = np.array(
+        [[1, 0, 0, 1], [1, 0, 0, 1], [0, 1, 1, 0], [0, 1, 1, 0]],
+        dtype=np.float32,
+    )
+    assert np.array_equal(M, expected_M)
+    assert np.allclose(W, 0.0)
+    expected_Y = df[[f"A_{a}" for a in ACTIONS]].to_numpy(np.float32) * expected_M
+    s = expected_Y.sum(axis=1, keepdims=True)
+    expected_Y = expected_Y / np.maximum(s, 1e-8)
+    assert np.allclose(Y, expected_Y)
+    assert np.allclose(R, 0.0)
+
+
 def test_window_segment_drops_windows_with_invalid_last_mask():
     N, D, C = 4, 2, 4
     X = np.arange(N * D, dtype=np.float32).reshape(N, D)
