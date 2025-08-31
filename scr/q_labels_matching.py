@@ -477,10 +477,7 @@ def soft_signal_labels_gaussian(
     blur_sigma: float = 1.0,
     mae_lambda: float = 0.0,
 ) -> pd.DataFrame:
-    """
-    Строит soft-метки действий (Open/Close/Hold/Wait) из колонки ``Signal_Rule``
-    с гауссовым размытием точек входа/выхода и штрафом MAE для Hold.
-
+    """Строит мягкие action-метки ``A_*`` из ``Signal_Rule``.
     * ``Signal_Rule``: +1 — вход, -1 — выход, 0 — Hold/Wait в зависимости от позиции.
     * Размываем только Open/Close; Hold/Wait — дополняют вероятности до 1.
     * В позиции базовая метка = Hold, однако MAE-штраф уменьшает вес Hold
@@ -513,14 +510,15 @@ def soft_signal_labels_gaussian(
     rng = np.arange(-blur_window, blur_window + 1)
     kernel = np.exp(-0.5 * (rng / blur_sigma) ** 2)
     kernel /= kernel.sum()
-    w_open = np.convolve(open_spike, kernel, mode='same')
-    w_close = np.convolve(close_spike, kernel, mode='same')
+    a_open = np.convolve(open_spike, kernel, mode="same")
+    a_close = np.convolve(close_spike, kernel, mode="same")
+    comp = np.maximum(0.0, 1.0 - a_open - a_close)
+    a_hold = comp.copy()
+    a_wait = comp.copy()
+    a_hold[flat] = 0.0
+    a_wait[inpos] = 0.0
 
-    comp = np.maximum(0.0, 1.0 - w_open - w_close)
-    w_hold = comp.copy()
-    w_wait = comp.copy()
-    w_hold[flat] = 0.0
-    w_wait[inpos] = 0.0
+
 
     if mae_lambda > 0.0:
         mae = np.zeros(n, dtype=np.float64)
@@ -543,19 +541,20 @@ def soft_signal_labels_gaussian(
             else:
                 mae[t] = 0.0
         pen = mae_lambda * np.abs(mae)
-        shift = np.minimum(w_hold, pen)
-        w_hold -= shift
-        w_close += shift
+        shift = np.minimum(a_hold, pen)
+        a_hold -= shift
+        a_close += shift
 
-    total = w_open + w_close + w_hold + w_wait
+    total = a_open + a_close + a_hold + a_wait
     mask = total > 0
-    w_open[mask] /= total[mask]
-    w_close[mask] /= total[mask]
-    w_hold[mask] /= total[mask]
-    w_wait[mask] /= total[mask]
+    a_open[mask] /= total[mask]
+    a_close[mask] /= total[mask]
+    a_hold[mask] /= total[mask]
+    a_wait[mask] /= total[mask]
 
-    out['Y_Open'] = w_open.astype(np.float32)
-    out['Y_Close'] = w_close.astype(np.float32)
-    out['Y_Hold'] = w_hold.astype(np.float32)
-    out['Y_Wait'] = w_wait.astype(np.float32)
+    out["A_Open"] = a_open.astype(np.float32)
+    out["A_Close"] = a_close.astype(np.float32)
+    out["A_Hold"] = a_hold.astype(np.float32)
+    out["A_Wait"] = a_wait.astype(np.float32)
+
     return out.reset_index(drop=True)

@@ -277,11 +277,11 @@ def test_soft_labels_gaussian_blur_and_normalisation():
     out = soft_signal_labels_gaussian(df, blur_window=1, blur_sigma=1.0, mae_lambda=0.0)
 
     # Размытый Open влияет на соседний бар t=0
-    assert out.loc[0, 'Y_Open'] > 0.0
+    assert out.loc[0, 'A_Open'] > 0.0
     # Размытый Close влияет на бар t=2 (до выхода)
-    assert out.loc[2, 'Y_Close'] > 0.0
+    assert out.loc[2, 'A_Close'] > 0.0
     # Каждая строка нормализована
-    sums = out[['Y_Open', 'Y_Close', 'Y_Hold', 'Y_Wait']].sum(axis=1)
+    sums = out[['A_Open', 'A_Close', 'A_Hold', 'A_Wait']].sum(axis=1)
     np.testing.assert_allclose(sums, 1.0, rtol=1e-7)
 
 
@@ -295,4 +295,4 @@ def test_soft_labels_mae_penalty_shifts_to_close():
     out_nopen = soft_signal_labels_gaussian(df, blur_window=1, blur_sigma=1.0, mae_lambda=0.0)
 
     # t=2: в позиции и в просадке, вес Close должен вырасти
-    assert out_pen.loc[2, 'Y_Close'] > out_nopen.loc[2, 'Y_Close']
+    assert out_pen.loc[2, 'A_Close'] > out_nopen.loc[2, 'A_Close']
