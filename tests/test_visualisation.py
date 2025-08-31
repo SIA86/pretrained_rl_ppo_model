@@ -47,7 +47,7 @@ def test_plot_with_action_labels(monkeypatch):
         }
     )
     plot_enriched_actions_one_side(df, start=0, end=len(df))
-
+    
 
 def test_plot_without_pos(monkeypatch):
     monkeypatch.setattr("matplotlib.pyplot.show", lambda: None)
