@@ -561,7 +561,7 @@ def soft_signal_labels_gaussian(
 
             if flat[t]:
                 if t == 0 or inpos[t - 1]:
-                    entry = entry_px[t]
+                    entry = Open[t]
                     worst_w = High[t] if side_long else Low[t]
                 else:
                     if side_long:
@@ -569,9 +569,9 @@ def soft_signal_labels_gaussian(
                     else:
                         worst_w = min(worst_w, Low[t])
                 if side_long:
-                    mae_w[t] = entry / worst_w - 1.0 
-                else:
                     mae_w[t] = worst_w / entry - 1.0
+                else:
+                    mae_w[t] = entry / worst_w - 1.0
             else:
                 mae_w[t] = 0.0
 

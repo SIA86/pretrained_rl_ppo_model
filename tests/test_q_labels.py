@@ -318,3 +318,15 @@ def test_soft_labels_mae_penalty_shifts_to_close():
     assert 'Pos' in out_pen.columns
     expected_pos = np.array([0, 1, 1, 1, 1, 0], dtype=np.int8)
     np.testing.assert_array_equal(out_pen['Pos'].to_numpy(np.int8), expected_pos)
+
+
+def test_soft_labels_mae_penalty_shifts_to_open():
+    """MAE-штраф уменьшает вес Wait и увеличивает вес Open на растущем рынке."""
+    open_px = np.array([100., 110., 120., 130., 140.])
+    df = _mk_df(open_px, sig=np.zeros_like(open_px))
+
+    out_pen = soft_signal_labels_gaussian(df, blur_window=1, blur_sigma=1.0, mae_lambda=0.5)
+    out_nopen = soft_signal_labels_gaussian(df, blur_window=1, blur_sigma=1.0, mae_lambda=0.0)
+
+    assert out_pen.loc[1, 'A_Open'] > out_nopen.loc[1, 'A_Open']
+    assert out_pen.loc[1, 'A_Wait'] < out_nopen.loc[1, 'A_Wait']
