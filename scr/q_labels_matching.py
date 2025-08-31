@@ -457,10 +457,10 @@ def enrich_q_labels_trend_one_side(
         raise ValueError("mode ∈ {'exit','horizon','tdlambda'}")
 
     # итоговые колонки
-    out['Q_Open']  = Q_Open.astype(np.float32)
-    out['Q_Close'] = Q_Close.astype(np.float32)
-    out['Q_Hold']  = Q_Hold.astype(np.float32)
-    out['Q_Wait']  = Q_Wait.astype(np.float32)
+    out['Q_Open']  = Q_Open.astype(np.float32)*1e4
+    out['Q_Close'] = Q_Close.astype(np.float32)*1e4
+    out['Q_Hold']  = Q_Hold.astype(np.float32)*1e4
+    out['Q_Wait']  = Q_Wait.astype(np.float32)*1e4
 
     out['Mask_Open']  = M_Open
     out['Mask_Close'] = M_Close
