@@ -536,32 +536,53 @@ def soft_signal_labels_gaussian(
                 a_close[j] = w
                 a_hold[j] = 1.0 - w
 
-
-
     if mae_lambda > 0.0:
-        mae = np.zeros(n, dtype=np.float64)
-        worst = np.nan
+        mae_h = np.zeros(n, dtype=np.float64)
+        mae_w = np.zeros(n, dtype=np.float64)
+        worst_h = np.nan
+        worst_w = np.nan
         entry = np.nan
         for t in range(n):
             if inpos[t]:
                 if t == 0 or not inpos[t - 1]:
                     entry = entry_px[t]
-                    worst = Low[t] if side_long else High[t]
+                    worst_h = Low[t] if side_long else High[t]
                 else:
                     if side_long:
-                        worst = min(worst, Low[t])
+                        worst_h = min(worst_h, Low[t])
                     else:
-                        worst = max(worst, High[t])
+                        worst_h = max(worst_h, High[t])
                 if side_long:
-                    mae[t] = worst / entry - 1.0
+                    mae_h[t] = worst_h / entry - 1.0
                 else:
-                    mae[t] = entry / worst - 1.0
+                    mae_h[t] = entry / worst_h - 1.0
             else:
-                mae[t] = 0.0
-        pen = mae_lambda * np.abs(mae)
-        shift = np.minimum(a_hold, pen)
-        a_hold -= shift
-        a_close += shift
+                mae_h[t] = 0.0
+
+            if flat[t]:
+                if t == 0 or inpos[t - 1]:
+                    entry = entry_px[t]
+                    worst_w = High[t] if side_long else Low[t]
+                else:
+                    if side_long:
+                        worst_w = max(worst_w, High[t])
+                    else:
+                        worst_w = min(worst_w, Low[t])
+                if side_long:
+                    mae_w[t] = entry / worst_w - 1.0 
+                else:
+                    mae_w[t] = worst_w / entry - 1.0
+            else:
+                mae_w[t] = 0.0
+
+        pen_h = mae_lambda * np.abs(mae_h)
+        pen_w = mae_lambda * np.abs(mae_w)
+        shift_h = np.minimum(a_hold, pen_h)
+        shift_w = np.minimum(a_wait, pen_w)
+        a_hold -= shift_h
+        a_close += shift_h
+        a_wait -= shift_w
+        a_open += shift_w
 
     total = a_open + a_close + a_hold + a_wait
     mask = total > 0
