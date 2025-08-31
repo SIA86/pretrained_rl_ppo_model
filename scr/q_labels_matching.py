@@ -468,3 +468,92 @@ def enrich_q_labels_trend_one_side(
     out['Mask_Wait']  = M_Wait
 
     return out.reset_index(drop=True)
+
+
+def soft_signal_labels_gaussian(
+    df: pd.DataFrame,
+    side_long: bool = True,
+    blur_window: int = 3,
+    blur_sigma: float = 1.0,
+    mae_lambda: float = 0.0,
+) -> pd.DataFrame:
+    """Строит мягкие action-метки ``A_*`` из ``Signal_Rule``.
+
+    * ``Signal_Rule``: +1 — вход, -1 — выход, 0 — Hold/Wait в зависимости от позиции.
+    * Размываем только Open/Close; Hold/Wait — дополняют вероятности до 1.
+    * В позиции базовая метка = Hold, однако MAE-штраф уменьшает вес Hold
+      в пользу Close пропорционально глубине просадки.
+    """
+    need = {'Open', 'High', 'Low', 'Signal_Rule'}
+    miss = need - set(df.columns)
+    if miss:
+        raise ValueError(f"нет колонок: {sorted(miss)}")
+
+    out = df.copy()
+    Open = out['Open'].to_numpy(np.float64)
+    High = out['High'].to_numpy(np.float64)
+    Low = out['Low'].to_numpy(np.float64)
+    sig = out['Signal_Rule'].to_numpy(np.int8)
+    n = len(out)
+
+    buy_sig = sig == 1
+    sell_sig = sig == -1
+
+    pos, entry_px = simulate_position_one_side(Open, buy_sig, sell_sig, side_long=side_long)
+    inpos = pos != 0
+    flat = ~inpos
+
+    open_spike = np.zeros(n, dtype=np.float64)
+    close_spike = np.zeros(n, dtype=np.float64)
+    open_spike[buy_sig & flat] = 1.0
+    close_spike[sell_sig & inpos] = 1.0
+
+    rng = np.arange(-blur_window, blur_window + 1)
+    kernel = np.exp(-0.5 * (rng / blur_sigma) ** 2)
+    kernel /= kernel.sum()
+    a_open = np.convolve(open_spike, kernel, mode="same")
+    a_close = np.convolve(close_spike, kernel, mode="same")
+
+    comp = np.maximum(0.0, 1.0 - a_open - a_close)
+    a_hold = comp.copy()
+    a_wait = comp.copy()
+    a_hold[flat] = 0.0
+    a_wait[inpos] = 0.0
+
+    if mae_lambda > 0.0:
+        mae = np.zeros(n, dtype=np.float64)
+        worst = np.nan
+        entry = np.nan
+        for t in range(n):
+            if inpos[t]:
+                if t == 0 or not inpos[t - 1]:
+                    entry = entry_px[t]
+                    worst = Low[t] if side_long else High[t]
+                else:
+                    if side_long:
+                        worst = min(worst, Low[t])
+                    else:
+                        worst = max(worst, High[t])
+                if side_long:
+                    mae[t] = worst / entry - 1.0
+                else:
+                    mae[t] = entry / worst - 1.0
+            else:
+                mae[t] = 0.0
+        pen = mae_lambda * np.abs(mae)
+        shift = np.minimum(a_hold, pen)
+        a_hold -= shift
+        a_close += shift
+
+    total = a_open + a_close + a_hold + a_wait
+    mask = total > 0
+    a_open[mask] /= total[mask]
+    a_close[mask] /= total[mask]
+    a_hold[mask] /= total[mask]
+    a_wait[mask] /= total[mask]
+
+    out["A_Open"] = a_open.astype(np.float32)
+    out["A_Close"] = a_close.astype(np.float32)
+    out["A_Hold"] = a_hold.astype(np.float32)
+    out["A_Wait"] = a_wait.astype(np.float32)
+    return out.reset_index(drop=True)
