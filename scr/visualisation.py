@@ -136,7 +136,9 @@ def plot_enriched_actions_one_side(
     has_q = need_q.issubset(cols)
     has_a = need_a.issubset(cols)
     if not (has_q or has_a):
-        raise ValueError("missing columns: Q_* or A_*")
+        missing_q = sorted(need_q - cols)
+        missing_a = sorted(need_a - cols)
+        raise ValueError(f"missing columns: {missing_q} or {missing_a}")
     prefix = "Q_" if has_q else "A_"
 
     if end is None:
