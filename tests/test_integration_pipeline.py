@@ -11,7 +11,7 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 from scr.q_labels_matching import enrich_q_labels_trend_one_side
 from scr.dataset_builder import DatasetBuilderForYourColumns, NUM_CLASSES
 from scr.residual_lstm import build_stacked_residual_lstm
-from scr.train_eval import _unpack_batch, predict_logits_dataset
+from scr.train_eval import _unpack_batch
 from scr.calibrate import calibrate_model
 from scr.backtest_env import run_backtest_with_logits
 
@@ -26,10 +26,14 @@ def _make_df(n: int = 40) -> pd.DataFrame:
             "Low": prices + rng.normal(scale=0.01, size=n) - 0.01,
             "Close": prices,
             "Signal_Rule": rng.integers(-1, 2, size=n),
+            "Pos": np.zeros(n),
+            "un_pnl": np.zeros(n),
+            "flat_steps": np.zeros(n),
+            "hold_steps": np.zeros(n),
+            "drawdown": np.zeros(n),
         }
     )
     df = enrich_q_labels_trend_one_side(df, mode="horizon", horizon=3)
-    df["un_pnl"] = 0.0
     return df
 
 
@@ -38,7 +42,7 @@ def test_full_pipeline(tmp_path):
     builder = DatasetBuilderForYourColumns(
         seq_len=5,
         feature_cols=["Open", "High", "Low", "Close", "Signal_Rule"],
-        account_cols=["Pos", "un_pnl"],
+        account_cols=["Pos", "un_pnl", "flat_steps", "hold_steps", "drawdown"],
         norm="none",
         splits=(0.5, 0.25, 0.25),
         batch_size=8,
@@ -65,15 +69,17 @@ def test_full_pipeline(tmp_path):
     for key in ["T", "ece_before", "ece_after", "nll_before", "nll_after"]:
         assert key in metrics and np.isfinite(metrics[key])
 
-    logits = predict_logits_dataset(model, ds_te)
-    actions = logits.argmax(axis=1)
     idx = splits["test"][-1]
-    mask = idx < (len(df) - 1)
-    idx = idx[mask]
-    actions = actions[mask]
-    assert len(idx) > 0
+    start = int(idx[0])
     env = run_backtest_with_logits(
-        df, actions, idx, feature_cols=builder.feature_names, price_col="Close"
+        df,
+        model,
+        feature_stats=builder.stats_features,
+        seq_len=5,
+        start=start,
+        feature_cols=builder.feature_names,
+        price_col="Close",
+        state_stats=builder.stats_account,
     )
     assert env.history
     log = env.logs()
