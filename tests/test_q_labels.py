@@ -330,3 +330,28 @@ def test_soft_labels_mae_penalty_shifts_to_open():
 
     assert out_pen.loc[1, 'A_Open'] > out_nopen.loc[1, 'A_Open']
     assert out_pen.loc[1, 'A_Wait'] < out_nopen.loc[1, 'A_Wait']
+
+
+def test_position_metrics_are_computed():
+    """Проверяем расчёт нереализованного PnL, счётчиков шагов и просадки."""
+    open_px = np.array([100., 110., 105., 120.])
+    high_px = np.array([100., 112., 107., 122.])
+    low_px = np.array([100., 108., 100., 115.])
+    sig = np.array([1, 0, 0, 0])
+    df = _mk_df(open_px, high=high_px, low=low_px, close=open_px, sig=sig)
+
+    out_soft = soft_signal_labels_gaussian(df, side_long=True, blur_window=1, blur_sigma=1.0, mae_lambda=0.0)
+    out_q = enrich_q_labels_trend_one_side(df, mode='exit', side_long=True, fee=0, slippage=0)
+
+    expected_unreal = np.array([0.0, 0.0, 105/110 - 1.0, 120/110 - 1.0])
+    expected_flat = np.array([1, 0, 0, 0])
+    expected_hold = np.array([0, 1, 2, 3])
+    expected_dd = np.array([0.0, 108/110 - 1.0, 100/110 - 1.0, 100/110 - 1.0])
+
+    for out in (out_soft, out_q):
+        for col in ['Unreal_PnL', 'Flat_Steps', 'Hold_Steps', 'Drawdown']:
+            assert col in out.columns
+        np.testing.assert_allclose(out['Unreal_PnL'], expected_unreal, rtol=1e-7)
+        np.testing.assert_array_equal(out['Flat_Steps'], expected_flat)
+        np.testing.assert_array_equal(out['Hold_Steps'], expected_hold)
+        np.testing.assert_allclose(out['Drawdown'], expected_dd, rtol=1e-7)
