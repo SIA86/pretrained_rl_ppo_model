@@ -15,6 +15,7 @@ def optimize_hyperparameters(
     val_ds: tf.data.Dataset,
     seq_len: int,
     feature_dim: int,
+    acc_dim: int,
     n_trials: int = 10,
     epochs: int = 10,
 ) -> Dict[str, object]:
@@ -53,6 +54,7 @@ def optimize_hyperparameters(
         model = build_stacked_residual_lstm(
             seq_len=seq_len,
             feature_dim=feature_dim,
+            account_dim=acc_dim,
             units_per_layer=units,
             dropout=dropout,
         )

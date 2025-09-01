@@ -199,6 +199,7 @@ def normalize_and_clip_weights(
 
 def _window_segment(
     X: np.ndarray,
+    A: np.ndarray,
     Y: np.ndarray,
     M: np.ndarray,
     W: np.ndarray,
@@ -209,18 +210,27 @@ def _window_segment(
     return_index: bool = False,
     start_offset: int = 0,
 ):
-    assert X.ndim == 2 and Y.ndim == 2 and M.ndim == 2 and W.ndim == 2 and R.ndim == 1
-    N, D = X.shape
+    assert (
+        X.ndim == 2
+        and A.ndim == 2
+        and Y.ndim == 2
+        and M.ndim == 2
+        and W.ndim == 2
+        and R.ndim == 1
+    )
+    N, Df = X.shape
+    Da = A.shape[1]
     C = Y.shape[1]
     if N < seq_len:
-        zX = np.empty((0, seq_len, D), np.float32)
+        zX = np.empty((0, seq_len, Df), np.float32)
+        zA = np.empty((0, seq_len, Da), np.float32)
         zC = np.empty((0, C), np.float32)
         zR = np.empty((0,), np.float32)
         zSW = None if SW is None else np.empty((0,), np.float32)
         if return_index:
             zI = np.empty((0,), np.int64)
-            return zX, zC, zC, zC, zR, zSW, zI
-        return zX, zC, zC, zC, zR, zSW
+            return zX, zA, zC, zC, zC, zR, zSW, zI
+        return zX, zA, zC, zC, zC, zR, zSW
 
     starts = np.arange(0, N - seq_len + 1, dtype=np.int64)
     if stride > 1:
@@ -231,6 +241,7 @@ def _window_segment(
     idx = starts[:, None] + offs
 
     Xw = X[idx, :]
+    Aw = A[idx, :]
     Yv = Y[idx, :]
     Mv = M[idx, :]
     Wv = W[idx, :]
@@ -247,6 +258,7 @@ def _window_segment(
     keep = Mw.sum(axis=1) > 0.0
     if keep.any():
         Xw = Xw[keep]
+        Aw = Aw[keep]
         Yw = Yw[keep]
         Mw = Mw[keep]
         Ww = Ww[keep]
@@ -256,21 +268,24 @@ def _window_segment(
         if return_index:
             idx_end = idx[:, -1][keep] + start_offset
     else:
-        zX = np.empty((0, seq_len, D), np.float32)
+        zX = np.empty((0, seq_len, Df), np.float32)
+        zA = np.empty((0, seq_len, Da), np.float32)
         zC = np.empty((0, C), np.float32)
         zR = np.empty((0,), np.float32)
         zSW = None if SW is None else np.empty((0,), np.float32)
         if return_index:
             zI = np.empty((0,), np.int64)
-            return zX, zC, zC, zC, zR, zSW, zI
-        return zX, zC, zC, zC, zR, zSW
+            return zX, zA, zC, zC, zC, zR, zSW, zI
+        return zX, zA, zC, zC, zC, zR, zSW
 
     Kf = Xw.shape[0]
+    assert Aw.shape == (Kf, seq_len, Da)
     assert Yw.shape == (Kf, C) and Mw.shape == (Kf, C) and Ww.shape == (Kf, C) and Rw.shape == (Kf,)
     if SWw is not None:
         assert SWw.shape == (Kf,)
     out = (
         Xw.astype(np.float32),
+        Aw.astype(np.float32),
         Yw.astype(np.float32),
         Mw.astype(np.float32),
         Ww.astype(np.float32),
@@ -283,16 +298,25 @@ def _window_segment(
 
 
 def build_tf_dataset(
-    Xw, Yw, Mw, Ww, Rw, SW=None, batch_size=256, shuffle=True, cache=True
+    Xw,
+    Aw,
+    Yw,
+    Mw,
+    Ww,
+    Rw,
+    SW=None,
+    batch_size=256,
+    shuffle=True,
+    cache=True,
 ):
     import tensorflow as tf  # local import to avoid hard dependency at module import
 
     if SW is None:
-        ds = tf.data.Dataset.from_tensor_slices((Xw, (Yw, Mw, Ww, Rw)))
+        ds = tf.data.Dataset.from_tensor_slices(((Xw, Aw), (Yw, Mw, Ww, Rw)))
     else:
         ds = tf.data.Dataset.from_tensor_slices(
             (
-                Xw,
+                (Xw, Aw),
                 (Yw, Mw, Ww, Rw, SW.astype(np.float32).reshape(-1)),
             )
         )
@@ -306,8 +330,9 @@ def build_tf_dataset(
     return ds
 
 
-def _assert_shapes_align(Xw, Yw, Mw, Ww, Rw, SW=None):
+def _assert_shapes_align(Xw, Aw, Yw, Mw, Ww, Rw, SW=None):
     n = len(Xw)
+    assert Aw.shape[0] == n
     assert Yw.shape[0] == n and Mw.shape[0] == n and Ww.shape[0] == n and Rw.shape[0] == n
     if SW is not None:
         assert len(SW) == n, f"SW length {len(SW)} != {n}"
@@ -319,6 +344,8 @@ def _assert_shapes_align(Xw, Yw, Mw, Ww, Rw, SW=None):
 @dataclass
 class DatasetBuilderForYourColumns:
     seq_len: int
+    feature_cols: List[str]
+    account_cols: List[str]
     stride: int = 1
     norm: Literal["zscore", "minmax", "robust", "none"] = "zscore"
     labels_from: Literal["q", "a"] = "q"
@@ -335,12 +362,20 @@ class DatasetBuilderForYourColumns:
     sw_clip_min: float = 1e-3
     sw_clip_max: float = 100.0
 
-    stats: Optional[NormalizationStats] = None
+    stats_features: Optional[NormalizationStats] = None
+    stats_account: Optional[NormalizationStats] = None
     feature_names: Optional[List[str]] = None
+    account_names: Optional[List[str]] = None
     invfreq_: Optional[np.ndarray] = None
 
     def fit_transform(self, df: pd.DataFrame, return_indices: bool = False):
-        X, feat_cols = extract_features(df, drop_cols=self.drop_cols)
+        X = df[self.feature_cols].to_numpy(np.float32)
+        A = df[self.account_cols].to_numpy(np.float32)
+        if self.drop_cols:
+            X = df[[c for c in self.feature_cols if c not in set(self.drop_cols)]].to_numpy(
+                np.float32
+            )
+            self.feature_cols = [c for c in self.feature_cols if c not in set(self.drop_cols)]
         W, M, Y, R = build_W_M_Y_R_from_df(
             df, labels_from=self.labels_from, tau=self.tau, r_mode=self.r_mode
         )
@@ -351,10 +386,14 @@ class DatasetBuilderForYourColumns:
 
         if self.norm == "none":
             Xn = X
-            self.stats = None
+            An = A
+            self.stats_features = None
+            self.stats_account = None
         else:
-            self.stats = NormalizationStats(kind=self.norm).fit(X[train_slice])
-            Xn = self.stats.transform(X)
+            self.stats_features = NormalizationStats(kind=self.norm).fit(X[train_slice])
+            Xn = self.stats_features.transform(X)
+            self.stats_account = NormalizationStats(kind=self.norm).fit(A[train_slice])
+            An = self.stats_account.transform(A)
 
         SW_full = None
         if self.sw_mode is not None:
@@ -382,7 +421,7 @@ class DatasetBuilderForYourColumns:
                 wmax=self.sw_clip_max,
             )
 
-        def cut(Xs, Ys, Ms, Ws, Rs, start, end):
+        def cut(Xs, As, Ys, Ms, Ws, Rs, start, end):
             kwargs = dict(
                 seq_len=self.seq_len,
                 stride=self.stride,
@@ -392,54 +431,82 @@ class DatasetBuilderForYourColumns:
             )
             return _window_segment(
                 Xs[start:end],
+                As[start:end],
                 Ys[start:end],
                 Ms[start:end],
                 Ws[start:end],
                 Rs[start:end],
                 **kwargs,
             )
-
-        tr = cut(Xn, Y, M, W, R, s0, s1)
-        va = cut(Xn, Y, M, W, R, s1, s2)
-        te = cut(Xn, Y, M, W, R, s2, s3)
+        tr = cut(Xn, An, Y, M, W, R, s0, s1)
+        va = cut(Xn, An, Y, M, W, R, s1, s2)
+        te = cut(Xn, An, Y, M, W, R, s2, s3)
 
         if return_indices:
-            (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr, Itr) = tr
-            (Xva, Yva, Mva, Wva, Rva, SWva, Iva) = va
-            (Xte, Yte, Mte, Wte, Rte, SWte, Ite) = te
+            (Xtr, Atr, Ytr, Mtr, Wtr, Rtr, SWtr, Itr) = tr
+            (Xva, Ava, Yva, Mva, Wva, Rva, SWva, Iva) = va
+            (Xte, Ate, Yte, Mte, Wte, Rte, SWte, Ite) = te
         else:
-            (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr) = tr
-            (Xva, Yva, Mva, Wva, Rva, SWva) = va
-            (Xte, Yte, Mte, Wte, Rte, SWte) = te
+            (Xtr, Atr, Ytr, Mtr, Wtr, Rtr, SWtr) = tr
+            (Xva, Ava, Yva, Mva, Wva, Rva, SWva) = va
+            (Xte, Ate, Yte, Mte, Wte, Rte, SWte) = te
 
-        self.feature_names = feat_cols
+        self.feature_names = list(self.feature_cols)
+        self.account_names = list(self.account_cols)
 
         if return_indices:
             return {
-                "train": (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr, Itr),
-                "val": (Xva, Yva, Mva, Wva, Rva, SWva, Iva),
-                "test": (Xte, Yte, Mte, Wte, Rte, SWte, Ite),
+                "train": (Xtr, Atr, Ytr, Mtr, Wtr, Rtr, SWtr, Itr),
+                "val": (Xva, Ava, Yva, Mva, Wva, Rva, SWva, Iva),
+                "test": (Xte, Ate, Yte, Mte, Wte, Rte, SWte, Ite),
             }
         return {
-            "train": (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr),
-            "val": (Xva, Yva, Mva, Wva, Rva, SWva),
-            "test": (Xte, Yte, Mte, Wte, Rte, SWte),
+            "train": (Xtr, Atr, Ytr, Mtr, Wtr, Rtr, SWtr),
+            "val": (Xva, Ava, Yva, Mva, Wva, Rva, SWva),
+            "test": (Xte, Ate, Yte, Mte, Wte, Rte, SWte),
         }
 
     def as_tf_datasets(self, splits):
-        (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr, *_) = splits["train"]
-        (Xva, Yva, Mva, Wva, Rva, SWva, *_) = splits["val"]
-        (Xte, Yte, Mte, Wte, Rte, SWte, *_) = splits["test"]
-        _assert_shapes_align(Xtr, Ytr, Mtr, Wtr, Rtr, SWtr)
+        (Xtr, Atr, Ytr, Mtr, Wtr, Rtr, SWtr, *_) = splits["train"]
+        (Xva, Ava, Yva, Mva, Wva, Rva, SWva, *_) = splits["val"]
+        (Xte, Ate, Yte, Mte, Wte, Rte, SWte, *_) = splits["test"]
+        _assert_shapes_align(Xtr, Atr, Ytr, Mtr, Wtr, Rtr, SWtr)
 
         ds_tr = build_tf_dataset(
-            Xtr, Ytr, Mtr, Wtr, Rtr, SW=SWtr, batch_size=self.batch_size, shuffle=True, cache=True
+            Xtr,
+            Atr,
+            Ytr,
+            Mtr,
+            Wtr,
+            Rtr,
+            SW=SWtr,
+            batch_size=self.batch_size,
+            shuffle=True,
+            cache=True,
         )
         ds_va = build_tf_dataset(
-            Xva, Yva, Mva, Wva, Rva, SW=SWva, batch_size=self.batch_size, shuffle=False, cache=True
+            Xva,
+            Ava,
+            Yva,
+            Mva,
+            Wva,
+            Rva,
+            SW=SWva,
+            batch_size=self.batch_size,
+            shuffle=False,
+            cache=True,
         )
         ds_te = build_tf_dataset(
-            Xte, Yte, Mte, Wte, Rte, SW=SWte, batch_size=self.batch_size, shuffle=False, cache=True
+            Xte,
+            Ate,
+            Yte,
+            Mte,
+            Wte,
+            Rte,
+            SW=SWte,
+            batch_size=self.batch_size,
+            shuffle=False,
+            cache=True,
         )
         return ds_tr, ds_va, ds_te
 

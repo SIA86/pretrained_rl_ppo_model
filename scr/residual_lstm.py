@@ -21,37 +21,42 @@ VERY_NEG = -1e9
 def build_stacked_residual_lstm(
     seq_len: int,
     feature_dim: int,
+    account_dim: int,
     num_classes: int = NUM_CLASSES,
     units_per_layer: Sequence[int] = (128, 128, 64),
     dropout: float = 0.2,
     ln_eps: float = 1e-5,
 ) -> keras.Model:
-    """Build a residual stacked LSTM network.
+    """Build a residual stacked LSTM network with two input channels."""
 
-    The model accepts only feature sequences and returns raw logits of shape
-    ``(batch, num_classes)``.
-    """
+    def _branch(inp, dim, prefix: str):
+        x = inp
+        in_dim = dim
+        for i, units in enumerate(units_per_layer):
+            h = layers.LSTM(units, return_sequences=True, name=f"{prefix}_lstm_{i}")(x)
+            h = layers.LayerNormalization(epsilon=ln_eps, name=f"{prefix}_ln_{i}")(h)
+            h = layers.Dropout(dropout, name=f"{prefix}_do_{i}")(h)
+            if in_dim == units:
+                x = layers.Add(name=f"{prefix}_res_add_{i}")([x, h])
+            else:
+                proj = layers.TimeDistributed(layers.Dense(units), name=f"{prefix}_res_proj_{i}")(x)
+                x = layers.Add(name=f"{prefix}_res_add_{i}")([proj, h])
+            in_dim = units
+        last = layers.Lambda(lambda t: t[:, -1, :], name=f"{prefix}_last")(x)
+        last = layers.LayerNormalization(epsilon=ln_eps, name=f"{prefix}_ln_head")(last)
+        last = layers.Dropout(dropout, name=f"{prefix}_do_head")(last)
+        return last
 
     x_in = keras.Input(shape=(seq_len, feature_dim), name="features")
-    x = x_in
-    in_dim = feature_dim
-    for i, units in enumerate(units_per_layer):
-        h = layers.LSTM(units, return_sequences=True, name=f"lstm_{i}")(x)
-        h = layers.LayerNormalization(epsilon=ln_eps, name=f"ln_{i}")(h)
-        h = layers.Dropout(dropout, name=f"do_{i}")(h)
-        if in_dim == units:
-            x = layers.Add(name=f"res_add_{i}")([x, h])
-        else:
-            proj = layers.TimeDistributed(layers.Dense(units), name=f"res_proj_{i}")(x)
-            x = layers.Add(name=f"res_add_{i}")([proj, h])
-        in_dim = units
+    a_in = keras.Input(shape=(seq_len, account_dim), name="account")
 
-    last = layers.Lambda(lambda t: t[:, -1, :], name="last_timestep")(x)
-    last = layers.LayerNormalization(epsilon=ln_eps, name="ln_head")(last)
-    last = layers.Dropout(dropout, name="do_head")(last)
-    hidden = layers.Dense(units_per_layer[-1], activation="relu", name="head_dense")(last)
+    feat_last = _branch(x_in, feature_dim, "feat")
+    acc_last = _branch(a_in, account_dim, "acc")
+
+    merged = layers.Concatenate(name="concat")([feat_last, acc_last])
+    hidden = layers.Dense(units_per_layer[-1], activation="relu", name="head_dense")(merged)
     logits = layers.Dense(num_classes, name="logits")(hidden)
-    return keras.Model(inputs=x_in, outputs=logits, name="ResidualLSTM")
+    return keras.Model(inputs=[x_in, a_in], outputs=logits, name="ResidualLSTM")
 
 
 def apply_action_mask(logits: tf.Tensor, mask: tf.Tensor, very_neg: float = VERY_NEG) -> tf.Tensor:

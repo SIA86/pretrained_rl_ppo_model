@@ -114,11 +114,12 @@ def _collect_validation_arrays(val_ds: tf.data.Dataset, num_classes: int) -> Tup
     """Materialise the validation dataset to NumPy arrays."""
 
     from .train_eval import _unpack_batch
-    Xb_list, Mb_list, Y_oh_list = [], [], []
+
+    Xb_list, Ab_list, Y_oh_list = [], [], []
     for batch in val_ds:
-        xb, mb, yb, *_ = _unpack_batch(batch)
+        xb, accb, _, yb, *_ = _unpack_batch(batch)
         xb_np = xb.numpy()
-        mb_np = mb.numpy()
+        acc_np = accb.numpy()
         yb_np = yb.numpy()
         if yb_np.ndim == 2 and yb_np.shape[1] == num_classes:
             y_onehot = yb_np.astype(np.float32)
@@ -126,13 +127,14 @@ def _collect_validation_arrays(val_ds: tf.data.Dataset, num_classes: int) -> Tup
             y_idx = np.squeeze(yb_np).astype(np.int64)
             y_onehot = np.eye(num_classes, dtype=np.float32)[y_idx]
         Xb_list.append(xb_np)
-        Mb_list.append(mb_np)
+        Ab_list.append(acc_np)
         Y_oh_list.append(y_onehot)
+
     Xb_val = np.concatenate(Xb_list, axis=0)
-    Mb_val = np.concatenate(Mb_list, axis=0)
+    Ab_val = np.concatenate(Ab_list, axis=0)
     Y_val_onehot = np.concatenate(Y_oh_list, axis=0)
     Y_val_int = Y_val_onehot.argmax(axis=1)
-    return Xb_val, Mb_val, Y_val_onehot, Y_val_int
+    return Xb_val, Ab_val, Y_val_onehot, Y_val_int
 
 
 def calibrate_model(
@@ -153,16 +155,16 @@ def calibrate_model(
     """
 
     num_classes = int(model.output_shape[-1])
-    Xb_val, Mb_val, Y_val_onehot, Y_val_int = _collect_validation_arrays(val_ds, num_classes)
+    Xb_val, Ab_val, Y_val_onehot, Y_val_int = _collect_validation_arrays(val_ds, num_classes)
 
     n = (Xb_val.shape[0] // batch_size) * batch_size
     Xb_val = Xb_val[:n]
-    Mb_val = Mb_val[:n]
+    Ab_val = Ab_val[:n]
     Y_val_onehot = Y_val_onehot[:n]
     Y_val_int = Y_val_int[:n]
 
-    has_mask = isinstance(model.input_shape, list) and len(model.input_shape) == 2
-    probe_inputs = (Xb_val[:batch_size], Mb_val[:batch_size]) if has_mask else Xb_val[:batch_size]
+    has_second = isinstance(model.input_shape, list) and len(model.input_shape) == 2
+    probe_inputs = (Xb_val[:batch_size], Ab_val[:batch_size]) if has_second else Xb_val[:batch_size]
     probe = model.predict(probe_inputs, batch_size=batch_size, verbose=0)
 
     def looks_like_probs(a: np.ndarray) -> bool:
@@ -174,10 +176,10 @@ def calibrate_model(
     is_probs = looks_like_probs(probe) if isinstance(probe, np.ndarray) else False
 
     inp_x = tf.keras.Input(shape=Xb_val.shape[1:], name="xb")
-    if has_mask:
-        inp_m = tf.keras.Input(shape=Mb_val.shape[1:], name="mb")
-        raw_out = model([inp_x, inp_m], training=False)
-        base_inputs = [inp_x, inp_m]
+    if has_second:
+        inp_a = tf.keras.Input(shape=Ab_val.shape[1:], name="acc")
+        raw_out = model([inp_x, inp_a], training=False)
+        base_inputs = [inp_x, inp_a]
     else:
         raw_out = model(inp_x, training=False)
         base_inputs = [inp_x]
@@ -198,7 +200,7 @@ def calibrate_model(
         metrics=[tf.keras.metrics.CategoricalCrossentropy(from_logits=True, name="nll")],
     )
 
-    inputs = (Xb_val, Mb_val) if has_mask else Xb_val
+    inputs = (Xb_val, Ab_val) if has_second else Xb_val
     val_np_ds = (
         tf.data.Dataset.from_tensor_slices((inputs, Y_val_onehot))
         .batch(batch_size, drop_remainder=True)
@@ -208,8 +210,8 @@ def calibrate_model(
     callbacks = [tf.keras.callbacks.EarlyStopping(monitor="nll", patience=5, restore_best_weights=True)]
     cal_model.fit(val_np_ds, epochs=100, verbose=0, callbacks=callbacks)
 
-    logits_before = base_logits_model.predict((Xb_val, Mb_val) if has_mask else Xb_val, batch_size=batch_size, verbose=0)
-    logits_after = cal_model.predict((Xb_val, Mb_val) if has_mask else Xb_val, batch_size=batch_size, verbose=0)
+    logits_before = base_logits_model.predict((Xb_val, Ab_val) if has_second else Xb_val, batch_size=batch_size, verbose=0)
+    logits_after = cal_model.predict((Xb_val, Ab_val) if has_second else Xb_val, batch_size=batch_size, verbose=0)
 
     probs_before = tf.nn.softmax(logits_before).numpy()
     probs_after = tf.nn.softmax(logits_after).numpy()
