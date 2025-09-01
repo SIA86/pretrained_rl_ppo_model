@@ -95,16 +95,26 @@ def test_use_log_reward():
     assert last_lin["reward"] == pytest.approx(0.5)
     assert last_log["reward"] == pytest.approx(np.log1p(0.5))
 
+
 # Конструктор тестовых данных
 def make_df(n=6, start=100.0, step=1.0):
-    prices = np.array([start + i*step for i in range(n)], dtype=float)
+    prices = np.array([start + i * step for i in range(n)], dtype=float)
     return pd.DataFrame({"close": prices, "feat": np.arange(n)})
+
 
 def test_no_index_error_after_done():
     df = make_df(5)  # индексы 0..4
-    cfg = EnvConfig(mode=1, fee=0.0, spread=0.0, leverage=1.0,
-                    max_steps=3, reward_scale=1.0,
-                    use_log_reward=False, time_penalty=0.0, hold_penalty=0.0)
+    cfg = EnvConfig(
+        mode=1,
+        fee=0.0,
+        spread=0.0,
+        leverage=1.0,
+        max_steps=3,
+        reward_scale=1.0,
+        use_log_reward=False,
+        time_penalty=0.0,
+        hold_penalty=0.0,
+    )
     env = BacktestEnv(df, feature_cols=["feat"], cfg=cfg)
 
     # Совершаем ровно max_steps шагов
@@ -121,27 +131,52 @@ def test_no_index_error_after_done():
     assert d is True
     assert r == 0.0
 
+
 def test_log_reward_no_nan_on_large_negative():
     # Имитация сильного минуса на шаге (резкий гэп вниз)
-    df = pd.DataFrame({"close": [100.0, 100.0, 0.1], "feat": [0,1,2]})
-    cfg = EnvConfig(mode=1, fee=0.0, spread=0.0, leverage=50.0,
-                    max_steps=10**9, reward_scale=1.0,
-                    use_log_reward=True, time_penalty=0.0, hold_penalty=0.0)
+    df = pd.DataFrame({"close": [100.0, 100.0, 0.1], "feat": [0, 1, 2]})
+    cfg = EnvConfig(
+        mode=1,
+        fee=0.0,
+        spread=0.0,
+        leverage=50.0,
+        max_steps=10**9,
+        reward_scale=1.0,
+        use_log_reward=True,
+        time_penalty=0.0,
+        hold_penalty=0.0,
+    )
     env = BacktestEnv(df, feature_cols=["feat"], cfg=cfg)
 
     env.step(0)  # Open long
     obs, reward, done, info = env.step(2)  # Hold → сильный минус
     assert np.isfinite(reward), "reward should be finite with log reward clipping"
 
+
 def test_vector_action_with_mask_argmax():
     df = make_df(5)
-    env = BacktestEnv(df, feature_cols=["feat"], cfg=EnvConfig(
-        mode=1, fee=0.0, spread=0.0, leverage=1.0,
-        max_steps=10**9, reward_scale=1.0,
-        use_log_reward=False, time_penalty=0.0, hold_penalty=0.0
-    ))
+    env = BacktestEnv(
+        df,
+        feature_cols=["feat"],
+        cfg=EnvConfig(
+            mode=1,
+            fee=0.0,
+            spread=0.0,
+            leverage=1.0,
+            max_steps=10**9,
+            reward_scale=1.0,
+            use_log_reward=False,
+            time_penalty=0.0,
+            hold_penalty=0.0,
+        ),
+    )
     # На старте позиция 0 → валидны только [Open, Wait]
-    logits = [5.0, -1.0, 9.0, -5.0]  # max на индексе 2, но он замаскирован → должен выбрать Open (0)
+    logits = [
+        5.0,
+        -1.0,
+        9.0,
+        -5.0,
+    ]  # max на индексе 2, но он замаскирован → должен выбрать Open (0)
     _, _, _, info = env.step(logits)
     assert info["position"] in (0, 1)
 
@@ -164,25 +199,30 @@ def test_observation_state_updates():
             "feat": [0, 1, 2],
         }
     )
-    env = BacktestEnv(df, feature_cols=["feat"], cfg=EnvConfig(
-        mode=1,
-        fee=0.0,
-        spread=0.0,
-        leverage=1.0,
-        max_steps=100,
-        reward_scale=1.0,
-        use_log_reward=False,
-        time_penalty=0.0,
-        hold_penalty=0.0,
-    ))
+    env = BacktestEnv(
+        df,
+        feature_cols=["feat"],
+        cfg=EnvConfig(
+            mode=1,
+            fee=0.0,
+            spread=0.0,
+            leverage=1.0,
+            max_steps=100,
+            reward_scale=1.0,
+            use_log_reward=False,
+            time_penalty=0.0,
+            hold_penalty=0.0,
+        ),
+    )
     obs = env.reset()
-    np.testing.assert_allclose(obs["state"], np.array([0, 0, 1, 0, 0], dtype=np.float32))
+    np.testing.assert_allclose(
+        obs["state"], np.array([0.0, 0.0, 0.001, 0.0, 0.0], dtype=np.float32)
+    )
     env.step(0)  # open
     obs, _, _, _ = env.step(2)  # hold
     state = obs["state"]
     assert state[0] == 1
-    assert state[3] == 2
-    assert state[2] == 0
+    assert state[3] == pytest.approx(0.002)
+    assert state[2] == pytest.approx(0.0)
     assert state[4] == pytest.approx(0.0)
     assert state[1] == pytest.approx((3.0 - 2.0) / 2.0)
-
