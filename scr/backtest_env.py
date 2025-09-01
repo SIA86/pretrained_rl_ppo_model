@@ -592,7 +592,7 @@ def run_backtest_with_logits(
         Исходный DataFrame с ценами и признаками.
     model:
         Модель, возвращающая логиты действий при вызове
-        ``model([features, state], training=False)``.
+        ``model(features, training=False)``.
     feature_stats:
         Статистика нормализации признаков. Если ``None``, признаки не
         нормализуются.
@@ -632,18 +632,19 @@ def run_backtest_with_logits(
         state_stats=state_stats,
     )
     env.reset()
-
+    state_hist = [env._get_state()]
     for _ in range(seq_len - 1):
         env.step(3)
+        state_hist.append(env._get_state())
 
     if isinstance(model, tf.Module):
 
         @tf.function
-        def _predict(x0, x1):
-            return model([x0, x1], training=False)
+        def _predict(x0):
+            return model(x0, training=False)
 
         def predict(inputs):
-            return _predict(inputs[0], inputs[1])
+            return _predict(inputs)
 
     else:
 
@@ -659,8 +660,10 @@ def run_backtest_with_logits(
         window = env.features[t - seq_len + 1 : t + 1]
         if feature_stats is not None:
             window = feature_stats.transform(window)
-        state = env._get_state()
-        logits = predict([window[None, :, :], state[None, :]])
+        state_window = np.stack(state_hist[t - seq_len + 1 : t + 1])
+        inputs = np.concatenate([window, state_window], axis=1)
+        logits = predict(inputs[None, :, :])
         env.step(np.asarray(logits).reshape(-1))
+        state_hist.append(env._get_state())
 
     return env

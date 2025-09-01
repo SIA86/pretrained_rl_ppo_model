@@ -18,12 +18,11 @@ from scr.residual_lstm import (
 
 def test_model_output_shape_and_inputs():
     model = build_stacked_residual_lstm(
-        seq_len=5, feature_dim=3, account_dim=2, units_per_layer=(4, 4)
+        seq_len=5, feature_dim=5, units_per_layer=(4, 4)
     )
-    assert len(model.inputs) == 2
-    x = tf.random.normal((2, 5, 3))
-    a = tf.random.normal((2, 2))
-    logits = model([x, a])
+    assert len(model.inputs) == 1
+    x = tf.random.normal((2, 5, 5))
+    logits = model(x)
     assert logits.shape == (2, 4)
 
 

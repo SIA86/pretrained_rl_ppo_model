@@ -1,11 +1,10 @@
 """Residual LSTM model and mask-aware utilities.
 
 This module provides a residual stacked LSTM network that produces raw logits
-for action selection. The feature sequence is processed by stacked LSTMs,
-while the account state is a single vector passed through a dense layer before
-concatenation. The validity mask is applied outside the model via
-:func:`apply_action_mask` before softmax is computed in the training loop.
-Mask-aware loss and accuracy helpers are also included.
+for action selection. The input sequence is processed by stacked LSTMs and
+the validity mask is applied outside the model via :func:`apply_action_mask`
+before softmax is computed in the training loop. Mask-aware loss and accuracy
+helpers are also included.
 """
 
 from __future__ import annotations
@@ -23,13 +22,12 @@ VERY_NEG = -1e9
 def build_stacked_residual_lstm(
     seq_len: int,
     feature_dim: int,
-    account_dim: int,
     num_classes: int = NUM_CLASSES,
     units_per_layer: Sequence[int] = (128, 128, 64),
     dropout: float = 0.2,
     ln_eps: float = 1e-5,
 ) -> keras.Model:
-    """Build a residual stacked LSTM network with two input channels."""
+    """Build a residual stacked LSTM network with a single input."""
 
     def _branch(inp, dim, prefix: str):
         x = inp
@@ -52,20 +50,13 @@ def build_stacked_residual_lstm(
         return last
 
     x_in = keras.Input(shape=(seq_len, feature_dim), name="features")
-    a_in = keras.Input(shape=(account_dim,), name="account")
 
     feat_last = _branch(x_in, feature_dim, "feat")
-    acc_last = layers.Dense(units_per_layer[-1], activation="relu", name="acc_dense")(
-        a_in
-    )
-    acc_last = layers.Dropout(dropout, name="acc_do")(acc_last)
-
-    merged = layers.Concatenate(name="concat")([feat_last, acc_last])
     hidden = layers.Dense(units_per_layer[-1], activation="relu", name="head_dense")(
-        merged
+        feat_last
     )
     logits = layers.Dense(num_classes, name="logits")(hidden)
-    return keras.Model(inputs=[x_in, a_in], outputs=logits, name="ResidualLSTM")
+    return keras.Model(inputs=x_in, outputs=logits, name="ResidualLSTM")
 
 
 def apply_action_mask(
