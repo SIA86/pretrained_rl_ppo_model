@@ -52,14 +52,13 @@ def test_full_pipeline(tmp_path):
 
     model = build_stacked_residual_lstm(
         seq_len=5,
-        feature_dim=len(builder.feature_names),
-        account_dim=len(builder.account_names),
+        feature_dim=len(builder.feature_names) + len(builder.account_names),
         units_per_layer=(8, 8),
     )
 
     batch = next(iter(ds_tr.take(1)))
-    xb, accb, mb, yb, *_ = _unpack_batch(batch)
-    out = model([xb, accb], training=False)
+    xb, mb, yb, *_ = _unpack_batch(batch)
+    out = model(xb, training=False)
     assert out.shape == (xb.shape[0], NUM_CLASSES)
     assert np.isfinite(out.numpy()).all()
 
@@ -79,7 +78,6 @@ def test_full_pipeline(tmp_path):
         start=start,
         feature_cols=builder.feature_names,
         price_col="Close",
-        state_stats=builder.stats_account,
     )
     assert env.history
     log = env.logs()

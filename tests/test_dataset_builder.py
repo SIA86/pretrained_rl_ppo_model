@@ -51,10 +51,9 @@ def test_fit_transform_shapes():
         splits=(0.5, 0.25, 0.25),
     )
     splits = builder.fit_transform(df)
-    Xtr, Atr, Ytr, Mtr, Wtr, Rtr, SWtr = splits["train"]
+    Xtr, Ytr, Mtr, Wtr, Rtr, SWtr = splits["train"]
 
-    assert Xtr.shape[1:] == (3, 2)
-    assert Atr.shape[1:] == (2,)
+    assert Xtr.shape[1:] == (3, 4)
     assert Ytr.shape[1] == 4
     assert Mtr.shape == Ytr.shape
     assert Wtr.shape == Ytr.shape
@@ -135,10 +134,11 @@ def test_window_segment_drops_windows_with_invalid_last_mask():
     )
     R = np.arange(N, dtype=np.float32)
 
-    Xw, Aw, Yw, Mw, Ww, Rw, SWw = _window_segment(
-        X, A, Y, M, W, R, seq_len=2, stride=1, SW=None
+    Xall = np.concatenate([X, A], axis=1)
+    Xw, Yw, Mw, Ww, Rw, SWw = _window_segment(
+        Xall, Y, M, W, R, seq_len=2, stride=1, SW=None
     )
-    assert Xw.shape[0] == 1 and Aw.shape == (1, 2)
+    assert Xw.shape[0] == 1 and Xw.shape[2] == 4
     assert Yw.shape == (1, C) and Rw.shape == (1,)
 
 
@@ -166,7 +166,7 @@ def test_fit_transform_returns_indices():
         splits=(0.7, 0.15, 0.15),
     )
     splits = builder.fit_transform(df, return_indices=True)
-    Xte, Ate, _, _, _, _, _, idx = splits["test"]
+    Xte, _, _, _, _, _, idx = splits["test"]
     assert idx.shape[0] == Xte.shape[0]
     assert idx[0] == 19
 
