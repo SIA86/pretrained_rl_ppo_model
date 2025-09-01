@@ -6,9 +6,11 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from scr.optuna_tuner import optimize_hyperparameters
 
 
-def _make_dataset(samples: int = 20, seq_len: int = 5, feature_dim: int = 3, acc_dim: int = 2):
+def _make_dataset(
+    samples: int = 20, seq_len: int = 5, feature_dim: int = 3, acc_dim: int = 2
+):
     x = tf.random.normal((samples, seq_len, feature_dim))
-    acc = tf.random.normal((samples, seq_len, acc_dim))
+    acc = tf.random.normal((samples, acc_dim))
     y = tf.random.uniform((samples,), maxval=4, dtype=tf.int32)
     y = tf.one_hot(y, 4)
     m = tf.ones_like(y)
