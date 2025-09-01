@@ -30,6 +30,7 @@ def _make_df(n: int = 20) -> pd.DataFrame:
         data[f"Mask_{a}"] = np.ones(n, dtype=np.float32)
     return pd.DataFrame(data)
 
+
 def df_from_WM(W, M, extra_cols=None):
     d = {}
     for i, a in enumerate(ACTIONS):
@@ -38,6 +39,7 @@ def df_from_WM(W, M, extra_cols=None):
     if extra_cols:
         d.update(extra_cols)
     return pd.DataFrame(d)
+
 
 def test_fit_transform_shapes():
     df = _make_df(30)
@@ -52,12 +54,13 @@ def test_fit_transform_shapes():
     Xtr, Atr, Ytr, Mtr, Wtr, Rtr, SWtr = splits["train"]
 
     assert Xtr.shape[1:] == (3, 2)
-    assert Atr.shape[1:] == (3, 2)
+    assert Atr.shape[1:] == (2,)
     assert Ytr.shape[1] == 4
     assert Mtr.shape == Ytr.shape
     assert Wtr.shape == Ytr.shape
     assert Rtr.shape[0] == Xtr.shape[0]
     assert SWtr is None
+
 
 def test_teacher_R_all_zero_mask_rows():
     W = np.array(
@@ -135,7 +138,7 @@ def test_window_segment_drops_windows_with_invalid_last_mask():
     Xw, Aw, Yw, Mw, Ww, Rw, SWw = _window_segment(
         X, A, Y, M, W, R, seq_len=2, stride=1, SW=None
     )
-    assert Xw.shape[0] == 1 and Aw.shape == (1, 2, 2)
+    assert Xw.shape[0] == 1 and Aw.shape == (1, 2)
     assert Yw.shape == (1, C) and Rw.shape == (1,)
 
 
@@ -201,5 +204,3 @@ def test_class_balance_weights_excludes_unused_rows():
 
     assert np.allclose(builder.invfreq_, expected_invfreq)
     assert np.allclose(SWtr, expected_sw)
-
-

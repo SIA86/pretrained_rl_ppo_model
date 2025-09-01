@@ -1,7 +1,9 @@
 """Residual LSTM model and mask-aware utilities.
 
 This module provides a residual stacked LSTM network that produces raw logits
-for action selection.  The validity mask is applied outside the model via
+for action selection. The feature sequence is processed by stacked LSTMs,
+while the account state is a single vector passed through a dense layer before
+concatenation. The validity mask is applied outside the model via
 :func:`apply_action_mask` before softmax is computed in the training loop.
 Mask-aware loss and accuracy helpers are also included.
 """
@@ -39,7 +41,9 @@ def build_stacked_residual_lstm(
             if in_dim == units:
                 x = layers.Add(name=f"{prefix}_res_add_{i}")([x, h])
             else:
-                proj = layers.TimeDistributed(layers.Dense(units), name=f"{prefix}_res_proj_{i}")(x)
+                proj = layers.TimeDistributed(
+                    layers.Dense(units), name=f"{prefix}_res_proj_{i}"
+                )(x)
                 x = layers.Add(name=f"{prefix}_res_add_{i}")([proj, h])
             in_dim = units
         last = layers.Lambda(lambda t: t[:, -1, :], name=f"{prefix}_last")(x)
@@ -48,18 +52,25 @@ def build_stacked_residual_lstm(
         return last
 
     x_in = keras.Input(shape=(seq_len, feature_dim), name="features")
-    a_in = keras.Input(shape=(seq_len, account_dim), name="account")
+    a_in = keras.Input(shape=(account_dim,), name="account")
 
     feat_last = _branch(x_in, feature_dim, "feat")
-    acc_last = _branch(a_in, account_dim, "acc")
+    acc_last = layers.Dense(units_per_layer[-1], activation="relu", name="acc_dense")(
+        a_in
+    )
+    acc_last = layers.Dropout(dropout, name="acc_do")(acc_last)
 
     merged = layers.Concatenate(name="concat")([feat_last, acc_last])
-    hidden = layers.Dense(units_per_layer[-1], activation="relu", name="head_dense")(merged)
+    hidden = layers.Dense(units_per_layer[-1], activation="relu", name="head_dense")(
+        merged
+    )
     logits = layers.Dense(num_classes, name="logits")(hidden)
     return keras.Model(inputs=[x_in, a_in], outputs=logits, name="ResidualLSTM")
 
 
-def apply_action_mask(logits: tf.Tensor, mask: tf.Tensor, very_neg: float = VERY_NEG) -> tf.Tensor:
+def apply_action_mask(
+    logits: tf.Tensor, mask: tf.Tensor, very_neg: float = VERY_NEG
+) -> tf.Tensor:
     """Apply validity mask to logits.
 
     Invalid actions (where ``mask == 0``) receive a large negative shift before
@@ -76,7 +87,10 @@ def apply_action_mask(logits: tf.Tensor, mask: tf.Tensor, very_neg: float = VERY
     # replace invalid positions with a large negative constant
     return tf.where(m > 0.0, logits, vneg)
 
-def masked_logits_and_probs(logits: tf.Tensor, mask: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+
+def masked_logits_and_probs(
+    logits: tf.Tensor, mask: tf.Tensor
+) -> tuple[tf.Tensor, tf.Tensor]:
     """Return masked logits and corresponding probabilities."""
 
     masked = apply_action_mask(logits, mask)
@@ -85,6 +99,7 @@ def masked_logits_and_probs(logits: tf.Tensor, mask: tf.Tensor) -> tuple[tf.Tens
     # if all actions invalid, return zeros to avoid NaNs
     probs = tf.where(has_valid, probs, tf.zeros_like(probs, dtype=logits.dtype))
     return masked, probs
+
 
 def masked_categorical_crossentropy(
     y_true: tf.Tensor,
@@ -116,7 +131,6 @@ def masked_categorical_crossentropy(
         denom = tf.reduce_sum(sw * tf.cast(has_label, dtype)) + eps
     else:
         denom = tf.reduce_sum(tf.cast(has_label, dtype)) + eps
-
 
     return tf.reduce_sum(per_sample) / denom
 

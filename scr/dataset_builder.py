@@ -62,6 +62,7 @@ def _sanitize_W_M(W: np.ndarray, M: np.ndarray):
 
 # ----------------- utils -----------------
 
+
 def _clean_soft_labels(Y: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     Y = np.nan_to_num(Y, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
     Y = np.clip(Y, 0.0, 1.0, out=Y)
@@ -100,6 +101,7 @@ def _split_indices(n: int, ratios=(0.7, 0.15, 0.15)):
 
 # ----------------- Y/M/W/R из вашего df -----------------
 
+
 def build_W_M_Y_R_from_df(
     df: pd.DataFrame,
     labels_from: Literal["q", "a"] = "q",
@@ -136,9 +138,7 @@ def build_W_M_Y_R_from_df(
         logits = logits - np.max(logits, axis=1, keepdims=True)
         expv = np.exp(logits) * M
         denom = expv.sum(axis=1, keepdims=True)
-        Y = np.where(
-            denom > 0.0, expv / np.maximum(denom, 1e-8), 1.0 / NUM_CLASSES
-        )
+        Y = np.where(denom > 0.0, expv / np.maximum(denom, 1e-8), 1.0 / NUM_CLASSES)
     else:
         Y = df[[A_COLS[a] for a in ACTIONS]].to_numpy(np.float32)
         Y = _clean_soft_labels(Y * M)
@@ -157,10 +157,16 @@ def build_W_M_Y_R_from_df(
         R = np.max(np.where(M > 0.0, W, -np.inf), axis=1)
         R = np.nan_to_num(R, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
-    return W.astype(np.float32), M.astype(np.float32), Y.astype(np.float32), R.astype(np.float32)
+    return (
+        W.astype(np.float32),
+        M.astype(np.float32),
+        Y.astype(np.float32),
+        R.astype(np.float32),
+    )
 
 
 # ----------------- генераторы sample_weight -----------------
+
 
 def gen_sw_R_based(R: np.ndarray, power: float = 1.0, eps: float = 1e-8) -> np.ndarray:
     w = np.power(np.abs(R) + eps, power)
@@ -191,7 +197,11 @@ def normalize_and_clip_weights(
 ) -> np.ndarray:
     w = np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0)
     w = np.clip(w, wmin, wmax)
-    mu = np.mean(w[train_slice]) if (train_slice.stop - train_slice.start) > 0 else np.mean(w)
+    mu = (
+        np.mean(w[train_slice])
+        if (train_slice.stop - train_slice.start) > 0
+        else np.mean(w)
+    )
     mu = max(mu, 1e-8)
     w = w / mu
     return w.astype(np.float32)
@@ -223,7 +233,7 @@ def _window_segment(
     C = Y.shape[1]
     if N < seq_len:
         zX = np.empty((0, seq_len, Df), np.float32)
-        zA = np.empty((0, seq_len, Da), np.float32)
+        zA = np.empty((0, Da), np.float32)
         zC = np.empty((0, C), np.float32)
         zR = np.empty((0,), np.float32)
         zSW = None if SW is None else np.empty((0,), np.float32)
@@ -241,7 +251,7 @@ def _window_segment(
     idx = starts[:, None] + offs
 
     Xw = X[idx, :]
-    Aw = A[idx, :]
+    Aw = A[idx[:, -1], :]
     Yv = Y[idx, :]
     Mv = M[idx, :]
     Wv = W[idx, :]
@@ -269,7 +279,7 @@ def _window_segment(
             idx_end = idx[:, -1][keep] + start_offset
     else:
         zX = np.empty((0, seq_len, Df), np.float32)
-        zA = np.empty((0, seq_len, Da), np.float32)
+        zA = np.empty((0, Da), np.float32)
         zC = np.empty((0, C), np.float32)
         zR = np.empty((0,), np.float32)
         zSW = None if SW is None else np.empty((0,), np.float32)
@@ -279,8 +289,13 @@ def _window_segment(
         return zX, zA, zC, zC, zC, zR, zSW
 
     Kf = Xw.shape[0]
-    assert Aw.shape == (Kf, seq_len, Da)
-    assert Yw.shape == (Kf, C) and Mw.shape == (Kf, C) and Ww.shape == (Kf, C) and Rw.shape == (Kf,)
+    assert Aw.shape == (Kf, Da)
+    assert (
+        Yw.shape == (Kf, C)
+        and Mw.shape == (Kf, C)
+        and Ww.shape == (Kf, C)
+        and Rw.shape == (Kf,)
+    )
     if SWw is not None:
         assert SWw.shape == (Kf,)
     out = (
@@ -333,7 +348,9 @@ def build_tf_dataset(
 def _assert_shapes_align(Xw, Aw, Yw, Mw, Ww, Rw, SW=None):
     n = len(Xw)
     assert Aw.shape[0] == n
-    assert Yw.shape[0] == n and Mw.shape[0] == n and Ww.shape[0] == n and Rw.shape[0] == n
+    assert (
+        Yw.shape[0] == n and Mw.shape[0] == n and Ww.shape[0] == n and Rw.shape[0] == n
+    )
     if SW is not None:
         assert len(SW) == n, f"SW length {len(SW)} != {n}"
 
@@ -372,10 +389,12 @@ class DatasetBuilderForYourColumns:
         X = df[self.feature_cols].to_numpy(np.float32)
         A = df[self.account_cols].to_numpy(np.float32)
         if self.drop_cols:
-            X = df[[c for c in self.feature_cols if c not in set(self.drop_cols)]].to_numpy(
-                np.float32
-            )
-            self.feature_cols = [c for c in self.feature_cols if c not in set(self.drop_cols)]
+            X = df[
+                [c for c in self.feature_cols if c not in set(self.drop_cols)]
+            ].to_numpy(np.float32)
+            self.feature_cols = [
+                c for c in self.feature_cols if c not in set(self.drop_cols)
+            ]
         W, M, Y, R = build_W_M_Y_R_from_df(
             df, labels_from=self.labels_from, tau=self.tau, r_mode=self.r_mode
         )
@@ -408,9 +427,7 @@ class DatasetBuilderForYourColumns:
                     df[self.sw_volume_col].to_numpy(), mode=self.sw_volume_mode
                 )
             elif self.sw_mode == "ClassBalance":
-                SW_full, invfreq = gen_sw_class_balancing(
-                    Y, train_slice=sw_train_slice
-                )
+                SW_full, invfreq = gen_sw_class_balancing(Y, train_slice=sw_train_slice)
                 self.invfreq_ = invfreq
             else:
                 raise ValueError("sw_mode ∈ {None,'R','Volume','ClassBalance'}")
@@ -438,6 +455,7 @@ class DatasetBuilderForYourColumns:
                 Rs[start:end],
                 **kwargs,
             )
+
         tr = cut(Xn, An, Y, M, W, R, s0, s1)
         va = cut(Xn, An, Y, M, W, R, s1, s2)
         te = cut(Xn, An, Y, M, W, R, s2, s3)
@@ -512,4 +530,3 @@ class DatasetBuilderForYourColumns:
 
 
 __all__ = ["DatasetBuilderForYourColumns"]
-
