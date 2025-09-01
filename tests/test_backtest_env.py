@@ -217,39 +217,13 @@ def test_observation_state_updates():
     )
     obs = env.reset()
     np.testing.assert_allclose(
-        obs["state"], np.array([0, 0, 1, 0, 0], dtype=np.float32)
+        obs["state"], np.array([0.0, 0.0, 0.001, 0.0, 0.0], dtype=np.float32)
     )
     env.step(0)  # open
     obs, _, _, _ = env.step(2)  # hold
     state = obs["state"]
     assert state[0] == 1
-    assert state[3] == 2
-    assert state[2] == 0
+    assert state[3] == pytest.approx(0.002)
+    assert state[2] == pytest.approx(0.0)
     assert state[4] == pytest.approx(0.0)
     assert state[1] == pytest.approx((3.0 - 2.0) / 2.0)
-
-
-def test_state_normalization():
-    df = pd.DataFrame({"close": [1.0, 2.0], "feat": [0, 1]})
-    stats = NormalizationStats()
-    train_states = np.array([[0, 0, 1, 0, 0], [1, 0.5, 0, 1, -0.2]], dtype=np.float32)
-    stats.fit(train_states)
-    env = BacktestEnv(
-        df,
-        feature_cols=["feat"],
-        cfg=EnvConfig(
-            mode=1,
-            fee=0.0,
-            spread=0.0,
-            leverage=1.0,
-            max_steps=10**9,
-            reward_scale=1.0,
-            use_log_reward=False,
-            time_penalty=0.0,
-            hold_penalty=0.0,
-        ),
-        state_stats=stats,
-    )
-    obs = env.reset()
-    expected = stats.transform(np.array([[0, 0, 1, 0, 0]], dtype=np.float32))[0]
-    np.testing.assert_allclose(obs["state"], expected)

@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from .normalisation import NormalizationStats
 
 
+
 # =============================================================
 # Конфигурация среды
 # =============================================================
@@ -409,8 +410,8 @@ class BacktestEnv:
             [
                 float(self.position),
                 float(self.unrealized_pnl),
-                float(self.flat_steps),
-                float(self.hold_steps),
+                float(self.flat_steps) / 1000.0,
+                float(self.hold_steps) / 1000.0,
                 float(self.drawdown),
             ],
             dtype=np.float32,

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from typing import Literal, Optional, Iterable
 
-'''
+"""
 1. Execution @ next_open: решения на баре t исполняются на Open[t+1]. Это обеспечивает корректную причинность и реалистичный бэктест.
 2. One-side + действия: работаем отдельно long-only или short-only; действия — Open / Close / Hold / Wait.
 Реверсы исключаем (реверс = Close → Open на следующем баре).
@@ -26,16 +26,19 @@ Hold = Ret(t+1 → TGT). Это устраняет «ранний выход н�
   строим Y = softmax(Q/τ) с масками валидности (advantage-нормировка нежелательна на этапе SL, т.к. теряет глобальный контекст; 
   он нужен для калибровки PPO). Value-head для PPO можно инициализировать как Vτ(s) = τ * log Σ_a exp(Q_a/τ) (мягкий максимум) 
   или max_a Q_a.
-'''
+"""
 
 # ------------------------------------------------------------
 # Вспомогательные утилиты (если у тебя уже есть версии — можно удалить эти)
 # ------------------------------------------------------------
 
-def simulate_position_one_side(open_px: np.ndarray,
-                               buy_sig: np.ndarray,
-                               sell_sig: np.ndarray,
-                               side_long: bool = True):
+
+def simulate_position_one_side(
+    open_px: np.ndarray,
+    buy_sig: np.ndarray,
+    sell_sig: np.ndarray,
+    side_long: bool = True,
+):
     """
     Односторонняя логика без реверсов (pos ∈ {0,+1} или {0,-1}).
     Вход/выход по сигналам, исполнение на next open.
@@ -53,25 +56,27 @@ def simulate_position_one_side(open_px: np.ndarray,
         pos[t] = p
         entry_eff[t] = ee
         enter_sig = buy_sig[t] if side_long else sell_sig[t]
-        exit_sig  = sell_sig[t] if side_long else buy_sig[t]
+        exit_sig = sell_sig[t] if side_long else buy_sig[t]
         if p == 0:
             if enter_sig:
                 p = pv
                 # вход исполняется на t+1 без комиссий (комиссии учитываем в Q)
-                ee = open_px[t+1]
+                ee = open_px[t + 1]
         else:
             if exit_sig:
                 p = 0
                 ee = np.nan
-    pos[n-1] = p
-    entry_eff[n-1] = ee
+    pos[n - 1] = p
+    entry_eff[n - 1] = ee
     return pos, entry_eff
 
 
-def next_exit_exec_arrays(open_px: np.ndarray,
-                          buy_sig: np.ndarray,
-                          sell_sig: np.ndarray,
-                          side_long: bool = True):
+def next_exit_exec_arrays(
+    open_px: np.ndarray,
+    buy_sig: np.ndarray,
+    sell_sig: np.ndarray,
+    side_long: bool = True,
+):
     """
     Для каждого t возвращает:
       exit_exec_idx[t] — индекс бара, на котором будет ИСПОЛНЁН выход (exec@next open),
@@ -81,7 +86,7 @@ def next_exit_exec_arrays(open_px: np.ndarray,
     """
     n = len(open_px)
     exit_idx = np.full(n, -1, dtype=np.int64)
-    exit_px  = np.full(n, np.nan, dtype=np.float64)
+    exit_px = np.full(n, np.nan, dtype=np.float64)
 
     # какие сигналы считаем выходом?
     # long-only: выход = sell_sig; short-only: выход = buy_sig
@@ -97,12 +102,12 @@ def next_exit_exec_arrays(open_px: np.ndarray,
     ptr = 0
     for t in range(n):
         # продвинем ptr до первого exec >= t+2 (чтобы было минимум одно плечо PnL)
-        while ptr < len(exec_positions) and exec_positions[ptr] < (t+2):
+        while ptr < len(exec_positions) and exec_positions[ptr] < (t + 2):
             ptr += 1
         if ptr < len(exec_positions):
             e_exec = exec_positions[ptr]
             exit_idx[t] = e_exec
-            exit_px[t]  = open_px[e_exec]
+            exit_px[t] = open_px[e_exec]
     return exit_idx, exit_px
 
 
@@ -110,12 +115,15 @@ def next_exit_exec_arrays(open_px: np.ndarray,
 # Метрики текущей позиции
 # ------------------------------------------------------------
 
-def calc_position_metrics(pos: np.ndarray,
-                          entry_px: np.ndarray,
-                          high: np.ndarray,
-                          low: np.ndarray,
-                          close: np.ndarray,
-                          side_long: bool = True):
+
+def calc_position_metrics(
+    pos: np.ndarray,
+    entry_px: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    side_long: bool = True,
+):
     """Вычисляет метрики по смоделированной позиции.
 
     Возвращает кортеж из четырёх массивов длины ``n``:
@@ -144,7 +152,7 @@ def calc_position_metrics(pos: np.ndarray,
             unreal[t] = 0.0
             dd[t] = 0.0
         else:
-            if t == 0 or pos[t-1] == 0:
+            if t == 0 or pos[t - 1] == 0:
                 run_hold = 1
                 run_flat = 0
                 entry = entry_px[t] if np.isfinite(entry_px[t]) else close[t]
@@ -172,9 +180,10 @@ def calc_position_metrics(pos: np.ndarray,
 # Основная разметка Q с mode ∈ {'exit','horizon','tdlambda'}
 # ------------------------------------------------------------
 
+
 def enrich_q_labels_trend_one_side(
     df: pd.DataFrame,
-    mode: Literal['exit','horizon','tdlambda'] = 'exit',
+    mode: Literal["exit", "horizon", "tdlambda"] = "exit",
     side_long: bool = True,
     # для 'horizon'
     horizon: int = 60,
@@ -186,8 +195,8 @@ def enrich_q_labels_trend_one_side(
     slippage: float = 0.0001,
     # MAE-штраф (по желанию) — применяется ТОЛЬКО к Hold/Open (см. ниже)
     use_mae_penalty: bool = False,
-    mae_lambda: float = 0.0,           # 0.0 = нет штрафа
-    mae_apply_to: Literal['hold','open','both','none'] = 'hold',
+    mae_lambda: float = 0.0,  # 0.0 = нет штрафа
+    mae_apply_to: Literal["hold", "open", "both", "none"] = "hold",
 ) -> pd.DataFrame:
     """
     Размечает абсолютные Q для one-side (long-only или short-only) и действий: Open / Close / Hold / Wait.
@@ -218,78 +227,85 @@ def enrich_q_labels_trend_one_side(
     Требуемые колонки df: 'Open','High','Low','Close','Signal_Rule'
       Signal_Rule: +1 — buy-сигнал, -1 — sell-сигнал (для teacher)
     """
-    need = {'Open','High','Low','Close','Signal_Rule'}
+    need = {"Open", "High", "Low", "Close", "Signal_Rule"}
     miss = need - set(df.columns)
     if miss:
         raise ValueError(f"нет колонок: {sorted(miss)}")
 
     out = df.copy()
-    Open  = out['Open' ].to_numpy(np.float64)
-    High  = out['High' ].to_numpy(np.float64)
-    Low   = out['Low'  ].to_numpy(np.float64)
-    Close = out['Close'].to_numpy(np.float64)
+    Open = out["Open"].to_numpy(np.float64)
+    High = out["High"].to_numpy(np.float64)
+    Low = out["Low"].to_numpy(np.float64)
+    Close = out["Close"].to_numpy(np.float64)
     n = len(Open)
 
     # сигналы учителя (ПРОВЕРЬ соответствие под твой пайплайн!)
-    buy_sig  = (out['Signal_Rule'].to_numpy() ==  1)
-    sell_sig = (out['Signal_Rule'].to_numpy() == -1)
-    buy_sig  = buy_sig.astype(np.bool_)
+    buy_sig = out["Signal_Rule"].to_numpy() == 1
+    sell_sig = out["Signal_Rule"].to_numpy() == -1
+    buy_sig = buy_sig.astype(np.bool_)
     sell_sig = sell_sig.astype(np.bool_)
 
     # позиция учителя (для entry_eff/pos)
-    pos, entry_eff = simulate_position_one_side(Open, buy_sig, sell_sig, side_long=side_long)
-    out['Pos'] = pos
+    pos, entry_eff = simulate_position_one_side(
+        Open, buy_sig, sell_sig, side_long=side_long
+    )
+    out["Pos"] = pos
 
     # метрики текущей позиции
     unreal, flat_steps, hold_steps, drawdown = calc_position_metrics(
         pos, entry_eff, High, Low, Close, side_long=side_long
     )
-    out['Unreal_PnL'] = unreal.astype(np.float32)
-    out['Flat_Steps'] = flat_steps.astype(np.int32)
-    out['Hold_Steps'] = hold_steps.astype(np.int32)
-    out['Drawdown'] = drawdown.astype(np.float32)
+    out["Unreal_PnL"] = unreal.astype(np.float32)
+    out["Flat_Steps"] = (flat_steps / 1000).astype(np.float32)
+    out["Hold_Steps"] = (hold_steps / 1000).astype(np.float32)
+    out["Drawdown"] = drawdown.astype(np.float32)
 
     # исполнение "сейчас" — next open
-    exec_next_open = np.full(n, np.nan); exec_next_open[:-1] = Open[1:]
+    exec_next_open = np.full(n, np.nan)
+    exec_next_open[:-1] = Open[1:]
 
     # комиссии
-    c_open  = fee + slippage
+    c_open = fee + slippage
     c_close = fee + slippage
 
     # маски состояний
     pos_now = pos
-    flat    = (pos_now == 0)
-    inpos   = (pos_now != 0) & np.isfinite(entry_eff)
-    has_next= (np.arange(n) < n-1)
+    flat = pos_now == 0
+    inpos = (pos_now != 0) & np.isfinite(entry_eff)
+    has_next = np.arange(n) < n - 1
 
     # контейнеры Q и масок
-    Q_Open  = np.full(n, np.nan, np.float64)
+    Q_Open = np.full(n, np.nan, np.float64)
     Q_Close = np.full(n, np.nan, np.float64)
-    Q_Hold  = np.full(n, np.nan, np.float64)
-    Q_Wait  = np.full(n, np.nan, np.float64)
+    Q_Hold = np.full(n, np.nan, np.float64)
+    Q_Wait = np.full(n, np.nan, np.float64)
 
-    M_Open  = np.zeros(n, np.int8)
+    M_Open = np.zeros(n, np.int8)
     M_Close = np.zeros(n, np.int8)
-    M_Hold  = np.zeros(n, np.int8)
-    M_Wait  = np.zeros(n, np.int8)
+    M_Hold = np.zeros(n, np.int8)
+    M_Wait = np.zeros(n, np.int8)
 
     # ------------------------------
     # mode = 'exit' : продолжение до teacher-exit
     # ------------------------------
-    if mode == 'exit':
+    if mode == "exit":
         # ближайший future exit (exec@next open)
-        exit_idx, exit_px = next_exit_exec_arrays(Open, buy_sig, sell_sig, side_long=side_long)
-        has_exit = (exit_idx >= (np.arange(n) + 2))  # нужен хотя бы один бар PnL: t+1 -> exit
+        exit_idx, exit_px = next_exit_exec_arrays(
+            Open, buy_sig, sell_sig, side_long=side_long
+        )
+        has_exit = exit_idx >= (
+            np.arange(n) + 2
+        )  # нужен хотя бы один бар PnL: t+1 -> exit
 
         # Open (flat): t+1 -> exit, с обеими ногами издержек
         m_open = flat & has_next & has_exit
         if side_long:
             entry_eff_open = exec_next_open * (1.0 + c_open)
-            exit_eff_open  = exit_px        * (1.0 - c_close)
+            exit_eff_open = exit_px * (1.0 - c_close)
             Q_Open[m_open] = exit_eff_open[m_open] / entry_eff_open[m_open] - 1.0
         else:
-            entry_eff_open = exec_next_open * (1.0 - c_open)   # sell
-            exit_eff_open  = exit_px        * (1.0 + c_close)  # buy
+            entry_eff_open = exec_next_open * (1.0 - c_open)  # sell
+            exit_eff_open = exit_px * (1.0 + c_close)  # buy
             Q_Open[m_open] = entry_eff_open[m_open] / exit_eff_open[m_open] - 1.0
         M_Open[m_open] = 1
 
@@ -315,19 +331,21 @@ def enrich_q_labels_trend_one_side(
         if use_mae_penalty and mae_lambda > 0.0:
             # штраф считаем по пути t+1...exit-1 относительно ExecNow
             def mae_fwd_long(t):
-                L, R = t+1, exit_idx[t]
-                if R <= L or not np.isfinite(exec_next_open[t]): return 0.0
+                L, R = t + 1, exit_idx[t]
+                if R <= L or not np.isfinite(exec_next_open[t]):
+                    return 0.0
                 worst = np.nanmin(Low[L:R])
-                return min(worst/exec_next_open[t] - 1.0, 0.0)
+                return min(worst / exec_next_open[t] - 1.0, 0.0)
 
             def mae_fwd_short(t):
-                L, R = t+1, exit_idx[t]
-                if R <= L or not np.isfinite(exec_next_open[t]): return 0.0
+                L, R = t + 1, exit_idx[t]
+                if R <= L or not np.isfinite(exec_next_open[t]):
+                    return 0.0
                 worst = np.nanmax(High[L:R])
-                return min(exec_next_open[t]/worst - 1.0, 0.0)
+                return min(exec_next_open[t] / worst - 1.0, 0.0)
 
             # HOLD
-            if mae_apply_to in ('hold','both'):
+            if mae_apply_to in ("hold", "both"):
                 idxs = np.where(M_Hold == 1)[0]
                 if side_long:
                     penalties = np.array([mae_fwd_long(t) for t in idxs])
@@ -336,7 +354,7 @@ def enrich_q_labels_trend_one_side(
                 Q_Hold[idxs] = Q_Hold[idxs] - mae_lambda * np.abs(penalties)
 
             # OPEN
-            if mae_apply_to in ('open','both'):
+            if mae_apply_to in ("open", "both"):
                 idxs = np.where(M_Open == 1)[0]
                 if side_long:
                     penalties = np.array([mae_fwd_long(t) for t in idxs])
@@ -347,10 +365,10 @@ def enrich_q_labels_trend_one_side(
     # ------------------------------
     # mode = 'horizon' : фиксированный горизонт H
     # ------------------------------
-    elif mode == 'horizon':
+    elif mode == "horizon":
         H = int(max(1, horizon))
         fut_idx = np.arange(n) + H
-        has_fut = (fut_idx < n)
+        has_fut = fut_idx < n
 
         fut_px = np.full(n, np.nan)
         fut_px[has_fut] = Open[fut_idx[has_fut]]
@@ -359,11 +377,11 @@ def enrich_q_labels_trend_one_side(
         m_open = flat & has_next & has_fut
         if side_long:
             entry_eff_open = exec_next_open * (1.0 + c_open)
-            exit_eff_open  = fut_px        * (1.0 - c_close)
+            exit_eff_open = fut_px * (1.0 - c_close)
             Q_Open[m_open] = exit_eff_open[m_open] / entry_eff_open[m_open] - 1.0
         else:
             entry_eff_open = exec_next_open * (1.0 - c_open)
-            exit_eff_open  = fut_px        * (1.0 + c_close)
+            exit_eff_open = fut_px * (1.0 + c_close)
             Q_Open[m_open] = entry_eff_open[m_open] / exit_eff_open[m_open] - 1.0
         M_Open[m_open] = 1
 
@@ -387,41 +405,51 @@ def enrich_q_labels_trend_one_side(
 
         # (опционально) MAE-штраф к Hold/Open — в горизонте считаем MAE на [t+1, t+H)
         if use_mae_penalty and mae_lambda > 0.0:
-            def mae_h_long(t):
-                L, R = t+1, t+H
-                if R <= L or not np.isfinite(exec_next_open[t]) or R > n: return 0.0
-                worst = np.nanmin(Low[L:R])
-                return min(worst/exec_next_open[t] - 1.0, 0.0)
-            def mae_h_short(t):
-                L, R = t+1, t+H
-                if R <= L or not np.isfinite(exec_next_open[t]) or R > n: return 0.0
-                worst = np.nanmax(High[L:R])
-                return min(exec_next_open[t]/worst - 1.0, 0.0)
 
-            if mae_apply_to in ('hold','both'):
+            def mae_h_long(t):
+                L, R = t + 1, t + H
+                if R <= L or not np.isfinite(exec_next_open[t]) or R > n:
+                    return 0.0
+                worst = np.nanmin(Low[L:R])
+                return min(worst / exec_next_open[t] - 1.0, 0.0)
+
+            def mae_h_short(t):
+                L, R = t + 1, t + H
+                if R <= L or not np.isfinite(exec_next_open[t]) or R > n:
+                    return 0.0
+                worst = np.nanmax(High[L:R])
+                return min(exec_next_open[t] / worst - 1.0, 0.0)
+
+            if mae_apply_to in ("hold", "both"):
                 idxs = np.where(M_Hold == 1)[0]
-                penalties = np.array([mae_h_long(t) if side_long else mae_h_short(t) for t in idxs])
+                penalties = np.array(
+                    [mae_h_long(t) if side_long else mae_h_short(t) for t in idxs]
+                )
                 Q_Hold[idxs] = Q_Hold[idxs] - mae_lambda * np.abs(penalties)
 
-            if mae_apply_to in ('open','both'):
+            if mae_apply_to in ("open", "both"):
                 idxs = np.where(M_Open == 1)[0]
-                penalties = np.array([mae_h_long(t) if side_long else mae_h_short(t) for t in idxs])
+                penalties = np.array(
+                    [mae_h_long(t) if side_long else mae_h_short(t) for t in idxs]
+                )
                 Q_Open[idxs] = Q_Open[idxs] - mae_lambda * np.abs(penalties)
 
     # ------------------------------
     # mode = 'tdlambda' : смесь n-step горизонтов (TF-style)
     # ------------------------------
-    elif mode == 'tdlambda':
+    elif mode == "tdlambda":
         Hm = int(max(1, H_max))
         # подготовим будущие Open для n=1..Hm
         fut = np.full((n, Hm), np.nan, dtype=np.float64)
-        for j in range(1, Hm+1):
+        for j in range(1, Hm + 1):
             idx = np.arange(n) + j
-            ok = (idx < n)
-            fut[ok, j-1] = Open[idx[ok]]
+            ok = idx < n
+            fut[ok, j - 1] = Open[idx[ok]]
 
         # веса TD(λ)
-        w = np.array([(1.0 - lam) * (lam ** (k-1)) for k in range(1, Hm+1)], dtype=np.float64)
+        w = np.array(
+            [(1.0 - lam) * (lam ** (k - 1)) for k in range(1, Hm + 1)], dtype=np.float64
+        )
         w = w / np.sum(w)
 
         # Open (flat): смесь n-step
@@ -429,11 +457,11 @@ def enrich_q_labels_trend_one_side(
         if np.any(m_open):
             if side_long:
                 entry_eff = (exec_next_open[m_open] * (1.0 + c_open))[:, None]
-                exit_eff  = (fut[m_open, :] * (1.0 - c_close))
+                exit_eff = fut[m_open, :] * (1.0 - c_close)
                 vals = exit_eff / entry_eff - 1.0
             else:
                 entry_eff = (exec_next_open[m_open] * (1.0 - c_open))[:, None]  # sell
-                exit_eff  = (fut[m_open, :] * (1.0 + c_close))                  # buy
+                exit_eff = fut[m_open, :] * (1.0 + c_close)  # buy
                 vals = entry_eff / exit_eff - 1.0
             # валидные столбцы: где fut не NaN
             mask_cols = np.isfinite(vals)
@@ -483,44 +511,50 @@ def enrich_q_labels_trend_one_side(
         if use_mae_penalty and mae_lambda > 0.0:
             # Предвычислим MAE для каждого n (дороже, но прозрачно)
             N = n  # длина временного ряда
+
             def mae_n_long(t, n_step):
                 L, R = t + 1, t + n_step  # R - правая граница (исключительная)
-                if R <= L or R > N or not np.isfinite(exec_next_open[t]): 
+                if R <= L or R > N or not np.isfinite(exec_next_open[t]):
                     return 0.0
                 worst = np.nanmin(Low[L:R])
                 return min(worst / exec_next_open[t] - 1.0, 0.0)
+
             def mae_n_short(t, n_step):
                 L, R = t + 1, t + n_step
-                if R <= L or R > N or not np.isfinite(exec_next_open[t]): 
+                if R <= L or R > N or not np.isfinite(exec_next_open[t]):
                     return 0.0
                 worst = np.nanmax(High[L:R])
                 return min(exec_next_open[t] / worst - 1.0, 0.0)
 
             # HOLD
-            if mae_apply_to in ('hold','both'):
+            if mae_apply_to in ("hold", "both"):
                 idxs = np.where(M_Hold == 1)[0]
                 penalties = []
                 for t in idxs:
-                    acc = 0.0; zw = 0.0
+                    acc = 0.0
+                    zw = 0.0
                     for j in range(1, Hm + 1):
                         R = t + j
                         if R < N:
                             pen = mae_n_long(t, j) if side_long else mae_n_short(t, j)
-                            acc += w[j-1] * np.abs(pen); zw += w[j-1]
+                            acc += w[j - 1] * np.abs(pen)
+                            zw += w[j - 1]
                     penalties.append(acc / (zw + 1e-12))
                 Q_Hold[idxs] = Q_Hold[idxs] - mae_lambda * np.asarray(penalties)
 
             # OPEN
-            if mae_apply_to in ('open','both'):
+            if mae_apply_to in ("open", "both"):
                 idxs = np.where(M_Open == 1)[0]
                 penalties = []
                 for t in idxs:
-                    acc = 0.0; zw = 0.0
+                    acc = 0.0
+                    zw = 0.0
                     for j in range(1, Hm + 1):
                         R = t + j
                         if R < N:
                             pen = mae_n_long(t, j) if side_long else mae_n_short(t, j)
-                            acc += w[j-1] * np.abs(pen); zw += w[j-1]
+                            acc += w[j - 1] * np.abs(pen)
+                            zw += w[j - 1]
                     penalties.append(acc / (zw + 1e-12))
                 Q_Open[idxs] = Q_Open[idxs] - mae_lambda * np.asarray(penalties)
 
@@ -528,15 +562,15 @@ def enrich_q_labels_trend_one_side(
         raise ValueError("mode ∈ {'exit','horizon','tdlambda'}")
 
     # итоговые колонки
-    out['Q_Open']  = Q_Open.astype(np.float32)
-    out['Q_Close'] = Q_Close.astype(np.float32)
-    out['Q_Hold']  = Q_Hold.astype(np.float32)
-    out['Q_Wait']  = Q_Wait.astype(np.float32)
+    out["Q_Open"] = Q_Open.astype(np.float32)
+    out["Q_Close"] = Q_Close.astype(np.float32)
+    out["Q_Hold"] = Q_Hold.astype(np.float32)
+    out["Q_Wait"] = Q_Wait.astype(np.float32)
 
-    out['Mask_Open']  = M_Open
-    out['Mask_Close'] = M_Close
-    out['Mask_Hold']  = M_Hold
-    out['Mask_Wait']  = M_Wait
+    out["Mask_Open"] = M_Open
+    out["Mask_Close"] = M_Close
+    out["Mask_Hold"] = M_Hold
+    out["Mask_Wait"] = M_Wait
 
     return out.reset_index(drop=True)
 
@@ -558,23 +592,25 @@ def soft_signal_labels_gaussian(
     * В результате добавляется колонка ``Pos`` — смоделированная позиция
       (one-side) для дальнейшей визуализации.
     """
-    need = {'Open', 'High', 'Low', 'Close', 'Signal_Rule'}
+    need = {"Open", "High", "Low", "Close", "Signal_Rule"}
     miss = need - set(df.columns)
     if miss:
         raise ValueError(f"нет колонок: {sorted(miss)}")
 
     out = df.copy()
-    Open = out['Open'].to_numpy(np.float64)
-    High = out['High'].to_numpy(np.float64)
-    Low = out['Low'].to_numpy(np.float64)
-    Close = out['Close'].to_numpy(np.float64)
-    sig = out['Signal_Rule'].to_numpy(np.int8)
+    Open = out["Open"].to_numpy(np.float64)
+    High = out["High"].to_numpy(np.float64)
+    Low = out["Low"].to_numpy(np.float64)
+    Close = out["Close"].to_numpy(np.float64)
+    sig = out["Signal_Rule"].to_numpy(np.int8)
     n = len(out)
 
     buy_sig = sig == 1
     sell_sig = sig == -1
 
-    pos, entry_px = simulate_position_one_side(Open, buy_sig, sell_sig, side_long=side_long)
+    pos, entry_px = simulate_position_one_side(
+        Open, buy_sig, sell_sig, side_long=side_long
+    )
     inpos = pos != 0
     flat = ~inpos
 
@@ -582,10 +618,10 @@ def soft_signal_labels_gaussian(
     unreal, flat_steps, hold_steps, drawdown = calc_position_metrics(
         pos, entry_px, High, Low, Close, side_long=side_long
     )
-    out['Unreal_PnL'] = unreal.astype(np.float32)
-    out['Flat_Steps'] = flat_steps.astype(np.int32)
-    out['Hold_Steps'] = hold_steps.astype(np.int32)
-    out['Drawdown'] = drawdown.astype(np.float32)
+    out["Unreal_PnL"] = unreal.astype(np.float32)
+    out["Flat_Steps"] = (flat_steps / 1000).astype(np.float32)
+    out["Hold_Steps"] = (hold_steps / 1000).astype(np.float32)
+    out["Drawdown"] = drawdown.astype(np.float32)
 
     offsets = np.arange(blur_window + 1)
     kernel = np.exp(-0.5 * (offsets / blur_sigma) ** 2)
