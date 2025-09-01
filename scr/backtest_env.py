@@ -6,6 +6,8 @@ import pandas as pd
 from typing import Optional, List, Dict, NamedTuple, Any
 from numba import njit, boolean, int64, float64
 import matplotlib.pyplot as plt
+from .normalisation import NormalizationStats
+
 
 
 # =============================================================
@@ -191,6 +193,7 @@ class BacktestEnv:
         feature_cols: Optional[List[str]] = None,
         price_col: str = "close",
         cfg: EnvConfig = DEFAULT_CONFIG,
+        state_stats: Optional[NormalizationStats] = None,
     ):
         """Подготовка данных и настройка параметров среды.
 
@@ -205,6 +208,8 @@ class BacktestEnv:
             Имя колонки с ценой, по которой рассчитывается PnL.
         cfg : EnvConfig
             Объект конфигурации среды.
+        state_stats : NormalizationStats, optional
+            Статистика для нормализации вектора состояния портфеля.
         """
 
         # Сбрасываем индекс, чтобы шаги шли от 0
@@ -229,6 +234,7 @@ class BacktestEnv:
             if "Low" in self.df.columns
             else self.prices
         )
+        self.state_stats = state_stats
         # Ограничиваем количество шагов размером датасета
         max_steps = min(cfg.max_steps, len(self.prices) - 1)
         # Создаём копию конфигурации с поправленным max_steps
@@ -400,7 +406,7 @@ class BacktestEnv:
         return obs, reward, done, info
 
     def _get_state(self) -> np.ndarray:
-        return np.array(
+        state = np.array(
             [
                 float(self.position),
                 float(self.unrealized_pnl),
@@ -410,6 +416,9 @@ class BacktestEnv:
             ],
             dtype=np.float32,
         )
+        if self.state_stats is not None:
+            state = self.state_stats.transform(state[None, :])[0]
+        return state
 
     def _get_obs(self) -> Dict[str, np.ndarray]:
         return {"features": self.features[self.t], "state": self._get_state()}

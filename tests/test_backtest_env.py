@@ -8,6 +8,7 @@ import pytest
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from scr.backtest_env import BacktestEnv, EnvConfig
 from scr.backtest_env import run_backtest_with_logits
+from scr.normalisation import NormalizationStats
 
 
 def make_env(prices, **cfg_kwargs):
