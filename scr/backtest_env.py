@@ -213,6 +213,16 @@ class BacktestEnv:
         # Массив признаков и цен для быстрого доступа
         self.features = self.df[feature_cols].to_numpy(dtype=np.float32)
         self.prices = self.df[price_col].to_numpy(dtype=np.float64)
+        self.highs = (
+            self.df["High"].to_numpy(dtype=np.float64)
+            if "High" in self.df.columns
+            else self.prices
+        )
+        self.lows = (
+            self.df["Low"].to_numpy(dtype=np.float64)
+            if "Low" in self.df.columns
+            else self.prices
+        )
         # Ограничиваем количество шагов размером датасета
         max_steps = min(cfg.max_steps, len(self.prices) - 1)
         # Создаём копию конфигурации с поправленным max_steps
@@ -237,9 +247,14 @@ class BacktestEnv:
         self.entry_price = 0.0  # цена входа в позицию
         self.equity = 0.0  # накопленная доходность
         self.realized_pnl = 0.0  # реализованный PnL
+        self.unrealized_pnl = 0.0  # нереализованный PnL
+        self.flat_steps = 1  # количество шагов вне позиции
+        self.hold_steps = 0  # количество шагов в позиции
+        self.drawdown = 0.0  # текущая просадка
+        self.worst_price = self.prices[0]
         self.done = False  # флаг завершения эпизода
         self.history: List[Dict] = []  # журнал событий
-        return self.features[self.t]
+        return self._get_obs()
 
     def action_mask(self) -> np.ndarray:
         """Маска допустимых действий.
@@ -253,12 +268,15 @@ class BacktestEnv:
         # Запрещаем шаги после завершения эпизода
         if getattr(self, "done", False):
             # Возвращаем текущее наблюдение и нулевую награду
-            obs = self.features[self.t]
+            obs = self._get_obs()
             info = {
                 "equity": self.equity,
                 "realized_pnl": self.realized_pnl,
-                "unrealized_pnl": 0.0 if self.position == 0 else self.position * ((self.prices[self.t] - self.entry_price) / self.entry_price) * self.cfg.leverage,
+                "unrealized_pnl": self.unrealized_pnl,
                 "position": self.position,
+                "flat_steps": self.flat_steps,
+                "hold_steps": self.hold_steps,
+                "drawdown": self.drawdown,
                 "action_mask": self.action_mask(),
             }
             return obs, 0.0, True, info
@@ -304,13 +322,39 @@ class BacktestEnv:
         if self.t >= self.cfg.max_steps:
             self.done = True
 
-        # Цена на текущем шаге
         price = self.prices[self.t]
-        # Расчёт нереализованного PnL, если есть позиция
-        unrealized = 0.0
-        if self.position != 0:
-            unrealized = self.position * ((price - self.entry_price) / self.entry_price) * self.cfg.leverage
-        # Сохраняем все данные шага в журнал
+        high = self.highs[self.t]
+        low = self.lows[self.t]
+
+        if self.position == 0:
+            self.flat_steps += 1
+            self.hold_steps = 0
+            self.unrealized_pnl = 0.0
+            self.drawdown = 0.0
+            self.worst_price = price
+        else:
+            if opened:
+                self.hold_steps = 1
+                self.flat_steps = 0
+                self.worst_price = low if self.position > 0 else high
+            else:
+                self.hold_steps += 1
+                self.flat_steps = 0
+                if self.position > 0:
+                    self.worst_price = min(self.worst_price, low)
+                else:
+                    self.worst_price = max(self.worst_price, high)
+            if self.position > 0:
+                self.unrealized_pnl = (
+                    (price - self.entry_price) / self.entry_price * self.cfg.leverage
+                )
+                self.drawdown = self.worst_price / self.entry_price - 1.0
+            else:
+                self.unrealized_pnl = (
+                    (self.entry_price - price) / self.entry_price * self.cfg.leverage
+                )
+                self.drawdown = self.entry_price / self.worst_price - 1.0
+
         self.history.append(
             {
                 "t": self.t,
@@ -320,7 +364,10 @@ class BacktestEnv:
                 "reward": reward,
                 "equity": self.equity,
                 "realized_pnl": self.realized_pnl,
-                "unrealized_pnl": unrealized,
+                "unrealized_pnl": self.unrealized_pnl,
+                "flat_steps": self.flat_steps,
+                "hold_steps": self.hold_steps,
+                "drawdown": self.drawdown,
                 "opened": opened,
                 "closed": closed,
                 "exec_price": exec_price,
@@ -328,16 +375,33 @@ class BacktestEnv:
             }
         )
 
-        # Наблюдение и дополнительная информация для агента
-        obs = self.features[self.t]
+        obs = self._get_obs()
         info = {
             "equity": self.equity,
             "realized_pnl": self.realized_pnl,
-            "unrealized_pnl": unrealized,
+            "unrealized_pnl": self.unrealized_pnl,
             "position": self.position,
+            "flat_steps": self.flat_steps,
+            "hold_steps": self.hold_steps,
+            "drawdown": self.drawdown,
             "action_mask": mask,
         }
         return obs, reward, done, info
+
+    def _get_state(self) -> np.ndarray:
+        return np.array(
+            [
+                float(self.position),
+                float(self.unrealized_pnl),
+                float(self.flat_steps),
+                float(self.hold_steps),
+                float(self.drawdown),
+            ],
+            dtype=np.float32,
+        )
+
+    def _get_obs(self) -> Dict[str, np.ndarray]:
+        return {"features": self.features[self.t], "state": self._get_state()}
 
     # ---------------------------------------------------------
     # Вспомогательные методы
