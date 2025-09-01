@@ -25,7 +25,8 @@ from scr.dataset_builder import NUM_CLASSES
 
 
 class DummyModel(tf.keras.Model):
-    def call(self, x, training=False):  # pragma: no cover - simple model
+    def call(self, inputs, training=False):  # pragma: no cover - simple model
+        x, acc = inputs
         batch = tf.shape(x)[0]
         logits = tf.reshape(tf.constant([1.0, 0.5, -2.0]), [1, 3])
         return tf.tile(logits, [batch, 1])
@@ -34,47 +35,52 @@ class DummyModel(tf.keras.Model):
 def _ds_no_w(batch_size=4, batches=3, num_classes=3):
     for _ in range(batches):
         x = tf.zeros([batch_size, 5])
+        acc = tf.zeros([batch_size, 2])
         m = tf.ones([batch_size, num_classes])
         y = tf.one_hot(np.random.randint(0, num_classes, size=(batch_size,)), num_classes)
-        yield x, (y, m)
+        yield (x, acc), (y, m)
 
 
 def _ds_sw(batch_size=4, batches=3, num_classes=3):
     for _ in range(batches):
         x = tf.zeros([batch_size, 5])
+        acc = tf.zeros([batch_size, 2])
         m = tf.ones([batch_size, num_classes])
         y = tf.one_hot(np.random.randint(0, num_classes, size=(batch_size,)), num_classes)
         sw = tf.random.uniform([batch_size])
-        yield x, (y, m, sw)
+        yield (x, acc), (y, m, sw)
 
 
 def _ds_masked():
     x = tf.zeros([4, 5])
+    acc = tf.zeros([4, 2])
     m = tf.concat([tf.zeros([4, 1]), tf.ones([4, 2])], axis=1)
     y = tf.one_hot([1, 1, 2, 2], 3)
-    yield x, (y, m)
+    yield (x, acc), (y, m)
 
     
 def test_unpack_batch_with_sw():
     x = tf.zeros((2, 5, 3))
+    acc = tf.zeros((2, 5, 2))
     m = tf.ones((2, NUM_CLASSES))
     y = tf.zeros((2, NUM_CLASSES))
     W = tf.ones((2, NUM_CLASSES))
     R = tf.ones((2,))
     SW = tf.constant([0.5, 1.0], dtype=tf.float32)
-    batch = (x, (y, m, W, R, SW))
-    xb, mb, yb, Wb, Rb, SWb = _unpack_batch(batch)
-    assert xb is x and mb is m and yb is y
+    batch = ((x, acc), (y, m, W, R, SW))
+    xb, accb, mb, yb, Wb, Rb, SWb = _unpack_batch(batch)
+    assert xb is x and accb is acc and mb is m and yb is y
     assert Wb is W and Rb is R and SWb is SW
 
 
 def test_unpack_batch_sw_only():
     x = tf.zeros((2, 5, 3))
+    acc = tf.zeros((2, 5, 2))
     m = tf.ones((2, NUM_CLASSES))
     y = tf.zeros((2, NUM_CLASSES))
     SW = tf.constant([0.5, 1.0], dtype=tf.float32)
-    batch = (x, (y, m, SW))
-    xb, mb, yb, Wb, Rb, SWb = _unpack_batch(batch)
+    batch = ((x, acc), (y, m, SW))
+    xb, accb, mb, yb, Wb, Rb, SWb = _unpack_batch(batch)
     assert Wb is None and Rb is None and SWb is SW
 
 
@@ -101,7 +107,10 @@ def test_expected_return_metric_simple():
 def test_validate_and_evaluate_no_w():
     model = DummyModel()
     sig = (
-        tf.TensorSpec([None, 5], tf.float32),
+        (
+            tf.TensorSpec([None, 5], tf.float32),
+            tf.TensorSpec([None, 2], tf.float32),
+        ),
         (
             tf.TensorSpec([None, 3], tf.float32),
             tf.TensorSpec([None, 3], tf.float32),
@@ -117,7 +126,10 @@ def test_validate_and_evaluate_no_w():
 def test_validate_and_evaluate_sw_only():
     model = DummyModel()
     sig = (
-        tf.TensorSpec([None, 5], tf.float32),
+        (
+            tf.TensorSpec([None, 5], tf.float32),
+            tf.TensorSpec([None, 2], tf.float32),
+        ),
         (
             tf.TensorSpec([None, 3], tf.float32),
             tf.TensorSpec([None, 3], tf.float32),
@@ -134,7 +146,10 @@ def test_validate_and_evaluate_sw_only():
 def test_confusion_f1_respects_mask(monkeypatch):
     model = DummyModel()
     sig = (
-        tf.TensorSpec([None, 5], tf.float32),
+        (
+            tf.TensorSpec([None, 5], tf.float32),
+            tf.TensorSpec([None, 2], tf.float32),
+        ),
         (
             tf.TensorSpec([None, 3], tf.float32),
             tf.TensorSpec([None, 3], tf.float32),
@@ -157,7 +172,10 @@ def test_materialize_metrics():
 def test_predict_logits_dataset():
     model = DummyModel()
     sig = (
-        tf.TensorSpec([None, 5], tf.float32),
+        (
+            tf.TensorSpec([None, 5], tf.float32),
+            tf.TensorSpec([None, 2], tf.float32),
+        ),
         (
             tf.TensorSpec([None, 3], tf.float32),
             tf.TensorSpec([None, 3], tf.float32),

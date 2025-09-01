@@ -21,6 +21,8 @@ def _make_df(n: int = 20) -> pd.DataFrame:
     data = {
         "f1": rng.normal(size=n),
         "f2": rng.normal(size=n),
+        "Pos": rng.integers(-1, 2, size=n),
+        "un_pnl": rng.normal(scale=0.1, size=n),
     }
     actions = ["Open", "Close", "Hold", "Wait"]
     for a in actions:
@@ -39,11 +41,18 @@ def df_from_WM(W, M, extra_cols=None):
 
 def test_fit_transform_shapes():
     df = _make_df(30)
-    builder = DatasetBuilderForYourColumns(seq_len=3, norm="none", splits=(0.5, 0.25, 0.25))
+    builder = DatasetBuilderForYourColumns(
+        seq_len=3,
+        feature_cols=["f1", "f2"],
+        account_cols=["Pos", "un_pnl"],
+        norm="none",
+        splits=(0.5, 0.25, 0.25),
+    )
     splits = builder.fit_transform(df)
-    Xtr, Ytr, Mtr, Wtr, Rtr, SWtr = splits["train"]
+    Xtr, Atr, Ytr, Mtr, Wtr, Rtr, SWtr = splits["train"]
 
     assert Xtr.shape[1:] == (3, 2)
+    assert Atr.shape[1:] == (3, 2)
     assert Ytr.shape[1] == 4
     assert Mtr.shape == Ytr.shape
     assert Wtr.shape == Ytr.shape
@@ -108,6 +117,7 @@ def test_build_W_M_Y_R_from_df_accepts_A_and_pos():
 def test_window_segment_drops_windows_with_invalid_last_mask():
     N, D, C = 4, 2, 4
     X = np.arange(N * D, dtype=np.float32).reshape(N, D)
+    A = np.arange(N * 2, dtype=np.float32).reshape(N, 2)
     Y = np.zeros((N, C), np.float32)
     Y[:, 0] = 1.0
     W = np.ones((N, C), np.float32)
@@ -122,10 +132,11 @@ def test_window_segment_drops_windows_with_invalid_last_mask():
     )
     R = np.arange(N, dtype=np.float32)
 
-    Xw, Yw, Mw, Ww, Rw, SWw = _window_segment(
-        X, Y, M, W, R, seq_len=2, stride=1, SW=None
+    Xw, Aw, Yw, Mw, Ww, Rw, SWw = _window_segment(
+        X, A, Y, M, W, R, seq_len=2, stride=1, SW=None
     )
-    assert Xw.shape[0] == 1 and Yw.shape == (1, C) and Rw.shape == (1,)
+    assert Xw.shape[0] == 1 and Aw.shape == (1, 2, 2)
+    assert Yw.shape == (1, C) and Rw.shape == (1,)
 
 
 def test_extract_features_excludes_Q_Mask_A_and_respects_drop():
@@ -144,9 +155,15 @@ def test_extract_features_excludes_Q_Mask_A_and_respects_drop():
 
 def test_fit_transform_returns_indices():
     df = _make_df(20)
-    builder = DatasetBuilderForYourColumns(seq_len=3, norm="none", splits=(0.7, 0.15, 0.15))
+    builder = DatasetBuilderForYourColumns(
+        seq_len=3,
+        feature_cols=["f1", "f2"],
+        account_cols=["Pos", "un_pnl"],
+        norm="none",
+        splits=(0.7, 0.15, 0.15),
+    )
     splits = builder.fit_transform(df, return_indices=True)
-    Xte, _, _, _, _, _, idx = splits["test"]
+    Xte, Ate, _, _, _, _, _, idx = splits["test"]
     assert idx.shape[0] == Xte.shape[0]
     assert idx[0] == 19
 
@@ -157,6 +174,8 @@ def test_class_balance_weights_excludes_unused_rows():
     data = {
         "f1": np.arange(n, dtype=np.float32),
         "f2": np.arange(n, dtype=np.float32),
+        "Pos": np.zeros(n, dtype=np.float32),
+        "un_pnl": np.zeros(n, dtype=np.float32),
     }
     for a in ACTIONS:
         data[f"Q_{a}"] = np.zeros(n, dtype=np.float32)
@@ -167,10 +186,15 @@ def test_class_balance_weights_excludes_unused_rows():
     df = pd.DataFrame(data)
 
     builder = DatasetBuilderForYourColumns(
-        seq_len=3, norm="none", labels_from="a", sw_mode="ClassBalance"
+        seq_len=3,
+        feature_cols=["f1", "f2"],
+        account_cols=["Pos", "un_pnl"],
+        norm="none",
+        labels_from="a",
+        sw_mode="ClassBalance",
     )
     splits = builder.fit_transform(df)
-    SWtr = splits["train"][5]
+    SWtr = splits["train"][6]
 
     expected_invfreq = np.array([2.5, 5.0, 5.0, 5.0], dtype=np.float32)
     expected_sw = np.array([1.25, 1.25, 0.625, 1.25, 0.625], dtype=np.float32)

@@ -108,15 +108,17 @@ class OneCycleLR:
 # ---------------------------------------------------------------------------
 
 
-def _unpack_batch(batch: Any) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor | None, tf.Tensor | None, tf.Tensor | None]:
+def _unpack_batch(
+    batch: Any,
+) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor | None, tf.Tensor | None, tf.Tensor | None]:
     """Unpack batches produced by :func:`dataset_builder.build_tf_dataset`.
 
-    The dataset can provide ``(X, (Y, M))`` or ``(X, (Y, M, W, R))`` or
-    ``(X, (Y, M, W, R, SW))``.  The function returns ``X, M, Y, W, R, SW``
-    where ``W``, ``R`` and ``SW`` may be ``None``.
+    The dataset can provide ``((X, A), (Y, M))`` or with additional arrays
+    ``((X, A), (Y, M, W, R[, SW]))``.  The function returns
+    ``X, A, M, Y, W, R, SW`` where ``W``, ``R`` and ``SW`` may be ``None``.
     """
 
-    x, rest = batch
+    (x, acc), rest = batch
     y, m, *extra = rest
     W = R = SW = None
     if extra:
@@ -139,7 +141,7 @@ def _unpack_batch(batch: Any) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tenso
                 SW = b
         else:
             W, R, SW = extra[:3]
-    return x, m, y, W, R, SW
+    return x, acc, m, y, W, R, SW
 
 
 def expected_return_metric(
@@ -259,13 +261,13 @@ def train_one_epoch(
     er_cnt = tf.zeros((), tf.float32)
 
     for batch in train_ds:
-        xb, mb, yb, Wb, Rb, SWb = _unpack_batch(batch)
+        xb, accb, mb, yb, Wb, Rb, SWb = _unpack_batch(batch)
 
         if lr_schedule is not None:
             optimizer.learning_rate.assign(lr_schedule(global_step))
 
         with tf.GradientTape() as tape:
-            logits = model(xb, training=True)
+            logits = model([xb, accb], training=True)
             loss = masked_categorical_crossentropy(yb, logits, mb, sample_w=SWb)
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
@@ -314,8 +316,8 @@ def validate_one_epoch(model: keras.Model, val_ds: tf.data.Dataset):
     ic_batches = tf.zeros((), tf.float32)
 
     for batch in val_ds:
-        xb, mb, yb, Wb, Rb, SWb = _unpack_batch(batch)
-        logits = model(xb, training=False)
+        xb, accb, mb, yb, Wb, Rb, SWb = _unpack_batch(batch)
+        logits = model([xb, accb], training=False)
 
         loss = masked_categorical_crossentropy(yb, logits, mb, sample_w=SWb)
         acc = masked_accuracy(yb, logits, mb, sample_w=SWb)
@@ -580,8 +582,8 @@ def confusion_and_f1_on_dataset(model: keras.Model, ds: tf.data.Dataset):
     y_true = []
     y_pred = []
     for batch in ds:
-        xb, mb, yb, _, _, _ = _unpack_batch(batch)
-        logits = model(xb, training=False)
+        xb, accb, mb, yb, _, _, _ = _unpack_batch(batch)
+        logits = model([xb, accb], training=False)
         masked_logits = apply_action_mask(logits, mb)
         y_true.append(np.argmax(yb.numpy(), axis=1))
         y_pred.append(np.argmax(masked_logits.numpy(), axis=1))
@@ -666,8 +668,8 @@ def evaluate_dataset(model: keras.Model, ds: tf.data.Dataset):
     ic_batches = tf.zeros((), tf.float32)
 
     for batch in ds:
-        xb, mb, yb, Wb, Rb, SWb = _unpack_batch(batch)
-        logits = model(xb, training=False)
+        xb, accb, mb, yb, Wb, Rb, SWb = _unpack_batch(batch)
+        logits = model([xb, accb], training=False)
 
         loss = masked_categorical_crossentropy(yb, logits, mb, sample_w=SWb)
         acc = masked_accuracy(yb, logits, mb, sample_w=SWb)
@@ -744,8 +746,8 @@ def predict_logits_dataset(model: keras.Model, ds: tf.data.Dataset) -> np.ndarra
 
     logits_list = []
     for batch in ds:
-        xb, *_ = _unpack_batch(batch)
-        logits = model(xb, training=False)
+        xb, accb, *_ = _unpack_batch(batch)
+        logits = model([xb, accb], training=False)
         logits_list.append(logits.numpy())
     if not logits_list:
         return np.empty((0, NUM_CLASSES), dtype=np.float32)

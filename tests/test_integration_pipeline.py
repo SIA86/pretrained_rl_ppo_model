@@ -28,24 +28,34 @@ def _make_df(n: int = 40) -> pd.DataFrame:
             "Signal_Rule": rng.integers(-1, 2, size=n),
         }
     )
-    return enrich_q_labels_trend_one_side(df, mode="horizon", horizon=3)
+    df = enrich_q_labels_trend_one_side(df, mode="horizon", horizon=3)
+    df["un_pnl"] = 0.0
+    return df
 
 
 def test_full_pipeline(tmp_path):
     df = _make_df()
     builder = DatasetBuilderForYourColumns(
-        seq_len=5, norm="none", splits=(0.5, 0.25, 0.25), batch_size=8
+        seq_len=5,
+        feature_cols=["Open", "High", "Low", "Close", "Signal_Rule"],
+        account_cols=["Pos", "un_pnl"],
+        norm="none",
+        splits=(0.5, 0.25, 0.25),
+        batch_size=8,
     )
     splits = builder.fit_transform(df, return_indices=True)
     ds_tr, ds_va, ds_te = builder.as_tf_datasets(splits)
 
     model = build_stacked_residual_lstm(
-        seq_len=5, feature_dim=len(builder.feature_names), units_per_layer=(8, 8)
+        seq_len=5,
+        feature_dim=len(builder.feature_names),
+        account_dim=len(builder.account_names),
+        units_per_layer=(8, 8),
     )
 
     batch = next(iter(ds_tr.take(1)))
-    xb, mb, yb, *_ = _unpack_batch(batch)
-    out = model(xb, training=False)
+    xb, accb, mb, yb, *_ = _unpack_batch(batch)
+    out = model([xb, accb], training=False)
     assert out.shape == (xb.shape[0], NUM_CLASSES)
     assert np.isfinite(out.numpy()).all()
 
