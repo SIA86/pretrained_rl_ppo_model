@@ -6,6 +6,8 @@ import pandas as pd
 from typing import Optional, List, Dict, NamedTuple, Any
 from numba import njit, boolean, int64, float64
 import matplotlib.pyplot as plt
+from .normalisation import NormalizationStats
+
 
 # =============================================================
 # Конфигурация среды
@@ -34,16 +36,17 @@ class EnvConfig(NamedTuple):
 
 
 DEFAULT_CONFIG = EnvConfig(
-    mode=1,          # работаем только от длинной позиции
-    fee=0.0,         # без комиссии
-    spread=0.0,      # без спреда
-    leverage=1.0,    # без плеча
-    max_steps=10**9, # практически бесконечный эпизод
-    reward_scale=1.0,# без масштабирования вознаграждения
-    use_log_reward=False, # линейная доходность
-    time_penalty=0.0,     # нет штрафа за удержание
-    hold_penalty=0.0,     # нет штрафа за бездействие
+    mode=1,  # работаем только от длинной позиции
+    fee=0.0,  # без комиссии
+    spread=0.0,  # без спреда
+    leverage=1.0,  # без плеча
+    max_steps=10**9,  # практически бесконечный эпизод
+    reward_scale=1.0,  # без масштабирования вознаграждения
+    use_log_reward=False,  # линейная доходность
+    time_penalty=0.0,  # нет штрафа за удержание
+    hold_penalty=0.0,  # нет штрафа за бездействие
 )
+
 
 # =============================================================
 # Numba helpers
@@ -60,6 +63,7 @@ def _fee_notional(price_exec: float64, leverage: float64, fee: float64) -> float
     # Комиссия пропорциональна номиналу позиции: цена * плечо * ставка
     return price_exec * leverage * fee
 
+
 @njit(cache=False, fastmath=False)
 def _step_single(
     action: int64,
@@ -68,7 +72,7 @@ def _step_single(
     entry_price: float64,
     realized_pnl: float64,
     prices: np.ndarray,
-    cfg: EnvConfig
+    cfg: EnvConfig,
 ) -> tuple:
     """Векторизованное выполнение одного шага симуляции.
 
@@ -98,9 +102,7 @@ def _step_single(
     prev_unrealized = 0.0
     if prev_position != 0:
         prev_unrealized = (
-            prev_position
-            * ((this_price - entry_price) / entry_price)
-            * cfg.leverage
+            prev_position * ((this_price - entry_price) / entry_price) * cfg.leverage
         )
 
     # Флаги и накопители, используемые ниже
@@ -160,7 +162,7 @@ def _step_single(
         core = np.log1p(clipped)
     else:
         core = pnl_step
-        
+
     reward = cfg.reward_scale * core
 
     return (
@@ -177,6 +179,7 @@ def _step_single(
         done,
     )
 
+
 # =============================================================
 # Environment class
 # =============================================================
@@ -189,6 +192,7 @@ class BacktestEnv:
         feature_cols: Optional[List[str]] = None,
         price_col: str = "close",
         cfg: EnvConfig = DEFAULT_CONFIG,
+        state_stats: Optional[NormalizationStats] = None,
     ):
         """Подготовка данных и настройка параметров среды.
 
@@ -203,13 +207,19 @@ class BacktestEnv:
             Имя колонки с ценой, по которой рассчитывается PnL.
         cfg : EnvConfig
             Объект конфигурации среды.
+        state_stats : NormalizationStats, optional
+            Статистика для нормализации вектора состояния портфеля.
         """
 
         # Сбрасываем индекс, чтобы шаги шли от 0
         self.df = df.reset_index(drop=True)
         if feature_cols is None:
             # По умолчанию используем все числовые признаки, кроме цены
-            feature_cols = [c for c in df.columns if c != price_col and np.issubdtype(df[c].dtype, np.number)]
+            feature_cols = [
+                c
+                for c in df.columns
+                if c != price_col and np.issubdtype(df[c].dtype, np.number)
+            ]
         # Массив признаков и цен для быстрого доступа
         self.features = self.df[feature_cols].to_numpy(dtype=np.float32)
         self.prices = self.df[price_col].to_numpy(dtype=np.float64)
@@ -223,6 +233,7 @@ class BacktestEnv:
             if "Low" in self.df.columns
             else self.prices
         )
+        self.state_stats = state_stats
         # Ограничиваем количество шагов размером датасета
         max_steps = min(cfg.max_steps, len(self.prices) - 1)
         # Создаём копию конфигурации с поправленным max_steps
@@ -294,7 +305,12 @@ class BacktestEnv:
             else:
                 action = 3 if self.position == 0 else 2
         # Валидация для скалярного действия
-        if not isinstance(action, (int, np.integer)) or action < 0 or action >= len(mask) or not mask[action]:
+        if (
+            not isinstance(action, (int, np.integer))
+            or action < 0
+            or action >= len(mask)
+            or not mask[action]
+        ):
             action = 3 if self.position == 0 else 2
 
         (
@@ -389,7 +405,7 @@ class BacktestEnv:
         return obs, reward, done, info
 
     def _get_state(self) -> np.ndarray:
-        return np.array(
+        state = np.array(
             [
                 float(self.position),
                 float(self.unrealized_pnl),
@@ -399,6 +415,9 @@ class BacktestEnv:
             ],
             dtype=np.float32,
         )
+        if self.state_stats is not None:
+            state = self.state_stats.transform(state[None, :])[0]
+        return state
 
     def _get_obs(self) -> Dict[str, np.ndarray]:
         return {"features": self.features[self.t], "state": self._get_state()}
