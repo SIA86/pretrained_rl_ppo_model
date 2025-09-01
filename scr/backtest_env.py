@@ -569,36 +569,72 @@ class BacktestEnv:
 
 def run_backtest_with_logits(
     df: pd.DataFrame,
-    logits: np.ndarray,
-    indices: np.ndarray,
+    model,
+    feature_stats: Optional[NormalizationStats],
+    seq_len: int,
+    start: Optional[int] = None,
     feature_cols: Optional[List[str]] = None,
     price_col: str = "close",
     cfg: EnvConfig = DEFAULT_CONFIG,
+    state_stats: Optional[NormalizationStats] = None,
 ) -> BacktestEnv:
-    """Run backtest for given logits aligned to DataFrame rows."""
+    """Run backtest by querying ``model`` on every step.
 
-    if len(logits) != len(indices):
-        raise ValueError("logits and indices length mismatch")
-    if len(indices) == 0:
-        raise ValueError("empty indices")
-    if not np.all(np.diff(indices) >= 0):
-        raise ValueError("indices must be non-decreasing")
+    Parameters
+    ----------
+    df:
+        Исходный DataFrame с ценами и признаками.
+    model:
+        Модель, возвращающая логиты действий при вызове
+        ``model([features, state], training=False)``.
+    feature_stats:
+        Статистика нормализации признаков. Если ``None``, признаки не
+        нормализуются.
+    seq_len:
+        Длина окна признаков, подаваемого в модель.
+    start:
+        Индекс строки ``df``, с которой начинается тест. По умолчанию
+        ``seq_len - 1``.
+    feature_cols:
+        Список колонок признаков. Если ``None``, будут использованы все
+        числовые признаки кроме ``price_col``.
+    price_col:
+        Имя колонки с ценой.
+    cfg:
+        Конфигурация среды ``BacktestEnv``.
+    state_stats:
+        Статистика нормализации состояния аккаунта, передаваемая в среду.
+    """
 
-    start = int(indices[0])
-    end = int(indices[-1])
-    if end + 1 >= len(df):
-        end = len(df) - 2
-        logits = logits[: end - start + 1]
-        indices = indices[: end - start + 1]
+    if seq_len <= 0:
+        raise ValueError("seq_len must be positive")
+    if start is None:
+        start = seq_len - 1
+    if start < seq_len - 1:
+        raise ValueError("start must be >= seq_len - 1")
+    if start >= len(df) - 1:
+        raise ValueError("start index out of range")
 
-    df_slice = df.iloc[start : end + 2].copy()
-    env = BacktestEnv(df_slice, feature_cols=feature_cols, price_col=price_col, cfg=cfg)
+    df_slice = df.iloc[start - seq_len + 1 :].copy()
+    env = BacktestEnv(
+        df_slice,
+        feature_cols=feature_cols,
+        price_col=price_col,
+        cfg=cfg,
+        state_stats=state_stats,
+    )
     env.reset()
 
-    actions = [3] * (end - start + 1)
-    for logit, idx in zip(logits, indices):
-        actions[int(idx) - start] = logit
+    for _ in range(seq_len - 1):
+        env.step(3)
 
-    for a in actions:
-        env.step(a)
+    while not env.done and env.t < len(env.prices) - 1:
+        t = env.t
+        window = env.features[t - seq_len + 1 : t + 1]
+        if feature_stats is not None:
+            window = feature_stats.transform(window)
+        state = env._get_state()
+        logits = model([window[None, :, :], state[None, :]], training=False)
+        env.step(np.asarray(logits).reshape(-1))
+
     return env

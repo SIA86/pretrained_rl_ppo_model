@@ -184,9 +184,25 @@ def test_vector_action_with_mask_argmax():
 
 def test_run_backtest_with_logits_executes_trade():
     df = make_df(4, start=1.0, step=1.0)
-    logits = np.array([[5.0, 0.0, 0.0, 0.0], [0.0, 5.0, 0.0, 0.0]])
-    indices = np.array([1, 2])
-    env = run_backtest_with_logits(df, logits, indices)
+    stats = NormalizationStats().fit(df[["feat"]].to_numpy(np.float32))
+
+    class DummyModel:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, inputs, training=False):
+            self.calls += 1
+            if self.calls == 1:
+                return np.array([[5.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+            return np.array([[0.0, 5.0, 0.0, 0.0]], dtype=np.float32)
+
+    env = run_backtest_with_logits(
+        df,
+        DummyModel(),
+        stats,
+        seq_len=2,
+        feature_cols=["feat"],
+    )
     log = env.logs()
     assert log.iloc[-1]["equity"] == pytest.approx((4 - 3) / 3)
 
