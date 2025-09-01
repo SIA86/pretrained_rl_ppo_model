@@ -107,6 +107,68 @@ def next_exit_exec_arrays(open_px: np.ndarray,
 
 
 # ------------------------------------------------------------
+# Метрики текущей позиции
+# ------------------------------------------------------------
+
+def calc_position_metrics(pos: np.ndarray,
+                          entry_px: np.ndarray,
+                          high: np.ndarray,
+                          low: np.ndarray,
+                          close: np.ndarray,
+                          side_long: bool = True):
+    """Вычисляет метрики по смоделированной позиции.
+
+    Возвращает кортеж из четырёх массивов длины ``n``:
+      * ``unreal``  – нереализованный PnL (в процентах);
+      * ``flat_cnt`` – количество последовательных шагов вне позиции;
+      * ``hold_cnt`` – количество последовательных шагов в позиции (удержание);
+      * ``dd``       – текущая просадка открытой позиции (в процентах).
+    """
+    n = len(pos)
+    unreal = np.zeros(n, dtype=np.float64)
+    flat_cnt = np.zeros(n, dtype=np.int64)
+    hold_cnt = np.zeros(n, dtype=np.int64)
+    dd = np.zeros(n, dtype=np.float64)
+
+    run_flat = 0
+    run_hold = 0
+    worst = np.nan
+    entry = np.nan
+
+    for t in range(n):
+        if pos[t] == 0:
+            run_flat += 1
+            run_hold = 0
+            flat_cnt[t] = run_flat
+            hold_cnt[t] = 0
+            unreal[t] = 0.0
+            dd[t] = 0.0
+        else:
+            if t == 0 or pos[t-1] == 0:
+                run_hold = 1
+                run_flat = 0
+                entry = entry_px[t] if np.isfinite(entry_px[t]) else close[t]
+                worst = low[t] if side_long else high[t]
+            else:
+                run_hold += 1
+                run_flat = 0
+                if side_long:
+                    worst = min(worst, low[t])
+                else:
+                    worst = max(worst, high[t])
+            hold_cnt[t] = run_hold
+            flat_cnt[t] = 0
+            if side_long:
+                unreal[t] = close[t] / entry - 1.0
+                dd[t] = worst / entry - 1.0
+            else:
+                unreal[t] = entry / close[t] - 1.0
+                dd[t] = entry / worst - 1.0
+
+    return unreal, flat_cnt, hold_cnt, dd
+
+
+# ------------------------------------------------------------
 # Основная разметка Q с mode ∈ {'exit','horizon','tdlambda'}
 # ------------------------------------------------------------
 
@@ -177,6 +239,15 @@ def enrich_q_labels_trend_one_side(
     # позиция учителя (для entry_eff/pos)
     pos, entry_eff = simulate_position_one_side(Open, buy_sig, sell_sig, side_long=side_long)
     out['Pos'] = pos
+
+    # метрики текущей позиции
+    unreal, flat_steps, hold_steps, drawdown = calc_position_metrics(
+        pos, entry_eff, High, Low, Close, side_long=side_long
+    )
+    out['Unreal_PnL'] = unreal.astype(np.float32)
+    out['Flat_Steps'] = flat_steps.astype(np.int32)
+    out['Hold_Steps'] = hold_steps.astype(np.int32)
+    out['Drawdown'] = drawdown.astype(np.float32)
 
     # исполнение "сейчас" — next open
     exec_next_open = np.full(n, np.nan); exec_next_open[:-1] = Open[1:]
@@ -496,6 +567,7 @@ def soft_signal_labels_gaussian(
     Open = out['Open'].to_numpy(np.float64)
     High = out['High'].to_numpy(np.float64)
     Low = out['Low'].to_numpy(np.float64)
+    Close = out['Close'].to_numpy(np.float64)
     sig = out['Signal_Rule'].to_numpy(np.int8)
     n = len(out)
 
@@ -505,6 +577,15 @@ def soft_signal_labels_gaussian(
     pos, entry_px = simulate_position_one_side(Open, buy_sig, sell_sig, side_long=side_long)
     inpos = pos != 0
     flat = ~inpos
+
+    # метрики текущей позиции
+    unreal, flat_steps, hold_steps, drawdown = calc_position_metrics(
+        pos, entry_px, High, Low, Close, side_long=side_long
+    )
+    out['Unreal_PnL'] = unreal.astype(np.float32)
+    out['Flat_Steps'] = flat_steps.astype(np.int32)
+    out['Hold_Steps'] = hold_steps.astype(np.int32)
+    out['Drawdown'] = drawdown.astype(np.float32)
 
     offsets = np.arange(blur_window + 1)
     kernel = np.exp(-0.5 * (offsets / blur_sigma) ** 2)
