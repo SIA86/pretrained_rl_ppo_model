@@ -428,7 +428,7 @@ def fit_model(
     schedule = make_schedule(factor=1.0)
     global_step = tf.Variable(0, dtype=tf.int64, trainable=False)
 
-    best_val = float("inf")
+    best_val = float("-inf")
     no_improve = 0
     since_restart = 0
     shrink_factor = 1.0
@@ -480,8 +480,8 @@ def fit_model(
         history["val"]["oracle_ER"].append(float(va["oracle_ER"]))
         history["val"]["ER_ratio"].append(float(va["ER_ratio"]))
 
-        if float(va['loss']) < best_val - 1e-6:
-            best_val = float(va['loss'])
+        if float(va['macro_f1']) > best_val - 1e-6:
+            best_val = float(va['macro_f1'])
             no_improve = 0
             since_restart = 0
             model.save_weights(best_path)
