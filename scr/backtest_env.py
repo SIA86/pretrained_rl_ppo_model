@@ -7,7 +7,12 @@ from typing import Optional, List, Dict, NamedTuple, Any
 from numba import njit, boolean, int64, float64
 import matplotlib.pyplot as plt
 from .normalisation import NormalizationStats
+import tensorflow as tf
 
+try:
+    from tqdm import trange
+except Exception:  # pragma: no cover
+    trange = range
 
 
 # =============================================================
@@ -577,6 +582,7 @@ def run_backtest_with_logits(
     price_col: str = "close",
     cfg: EnvConfig = DEFAULT_CONFIG,
     state_stats: Optional[NormalizationStats] = None,
+    show_progress: bool = True,
 ) -> BacktestEnv:
     """Run backtest by querying ``model`` on every step.
 
@@ -604,6 +610,8 @@ def run_backtest_with_logits(
         Конфигурация среды ``BacktestEnv``.
     state_stats:
         Статистика нормализации состояния аккаунта, передаваемая в среду.
+    show_progress:
+        Показывать ли индикатор прогресса бэктеста.
     """
 
     if seq_len <= 0:
@@ -628,13 +636,31 @@ def run_backtest_with_logits(
     for _ in range(seq_len - 1):
         env.step(3)
 
-    while not env.done and env.t < len(env.prices) - 1:
+    if isinstance(model, tf.Module):
+
+        @tf.function
+        def _predict(x0, x1):
+            return model([x0, x1], training=False)
+
+        def predict(inputs):
+            return _predict(inputs[0], inputs[1])
+
+    else:
+
+        def predict(inputs):
+            return model(inputs, training=False)
+
+    total_steps = len(env.prices) - seq_len
+    iterator = trange(total_steps) if show_progress else range(total_steps)
+    for _ in iterator:
+        if env.done or env.t >= len(env.prices) - 1:
+            break
         t = env.t
         window = env.features[t - seq_len + 1 : t + 1]
         if feature_stats is not None:
             window = feature_stats.transform(window)
         state = env._get_state()
-        logits = model([window[None, :, :], state[None, :]], training=False)
+        logits = predict([window[None, :, :], state[None, :]])
         env.step(np.asarray(logits).reshape(-1))
 
     return env
