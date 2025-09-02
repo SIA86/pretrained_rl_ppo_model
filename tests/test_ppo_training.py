@@ -10,7 +10,6 @@ from scr.ppo_training import (
 )
 from scr.residual_lstm import build_stacked_residual_lstm
 
-
 def make_env():
     df = pd.DataFrame({"close": [1.0, 1.0], "feat": [0.0, 0.0]})
     cfg = EnvConfig(
