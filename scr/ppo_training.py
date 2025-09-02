@@ -217,6 +217,24 @@ def ppo_update(
     return kl_coef * kl_decay, metrics
 
 
+def evaluate_profit(
+    env: BacktestEnv, actor: keras.Model, seq_len: int, feature_dim: int
+) -> float:
+    """Run policy in the environment and return final equity."""
+
+    obs = env.reset()
+    while True:
+        feat = obs["features"].reshape(seq_len, feature_dim)
+        mask = env.action_mask()
+        logits = actor(feat[None, ...], training=False)
+        masked = apply_action_mask(logits, mask[None, :])
+        action = int(tf.argmax(masked, axis=-1)[0])
+        obs, _, done, _ = env.step(action)
+        if done:
+            break
+    return float(env.equity)
+
+
 def train(
     train_env: BacktestEnv,
     test_env: BacktestEnv,
@@ -227,6 +245,7 @@ def train(
     total_steps: int = 1024,
     teacher_kl: float = 0.1,
     kl_decay: float = 0.99,
+    early_stop_patience: int = 10,
 ):
     """High level training routine."""
 
@@ -239,11 +258,17 @@ def train(
     actor_opt = keras.optimizers.Adam(3e-4)
     critic_opt = keras.optimizers.Adam(1e-3)
 
+    os.makedirs(save_path, exist_ok=True)
     writer = tf.summary.create_file_writer(os.path.join(save_path, "logs"))
 
     steps = 0
     kl_coef = teacher_kl
-    while steps < total_steps:
+    best_profit = -np.inf
+    wait = 0
+    best_actor_path = os.path.join(save_path, "actor_best.h5")
+    best_critic_path = os.path.join(save_path, "critic_best.h5")
+
+    while steps < total_steps and wait < early_stop_patience:
         traj = collect_trajectories(
             train_env, actor, critic, batch_size=256, seq_len=seq_len, feature_dim=feature_dim
         )
@@ -259,29 +284,31 @@ def train(
         )
         steps += len(traj.actions)
         avg_ret = float(np.mean(traj.returns))
-        print(f"step={steps} avg_reward={avg_ret:.3f} kl_coef={kl_coef:.4f}")
+        profit = evaluate_profit(test_env, actor, seq_len, feature_dim)
+        if profit > best_profit:
+            best_profit = profit
+            wait = 0
+            actor.save_weights(best_actor_path)
+            critic.save_weights(best_critic_path)
+        else:
+            wait += 1
+        print(
+            f"step={steps} avg_reward={avg_ret:.3f} profit={profit:.3f} kl_coef={kl_coef:.4f}"
+        )
         with writer.as_default():
             tf.summary.scalar("avg_return", avg_ret, step=steps)
+            tf.summary.scalar("profit", profit, step=steps)
             for k, v in metrics.items():
                 tf.summary.scalar(k, v, step=steps)
     writer.flush()
 
-    os.makedirs(save_path, exist_ok=True)
     actor.save_weights(os.path.join(save_path, "actor.h5"))
     critic.save_weights(os.path.join(save_path, "critic.h5"))
+    actor.load_weights(best_actor_path)
+    critic.load_weights(best_critic_path)
 
     # Inference on test data
-    obs = test_env.reset()
-    while True:
-        feat = obs["features"].reshape(seq_len, feature_dim)
-        mask = test_env.action_mask()
-        logits = actor(feat[None, ...], training=False)
-        masked = apply_action_mask(logits, mask[None, :])
-        action = int(tf.argmax(masked, axis=-1)[0])
-        obs, _, done, _ = test_env.step(action)
-        if done:
-            break
-
+    evaluate_profit(test_env, actor, seq_len, feature_dim)
     fig = test_env.plot("PPO inference")
     os.makedirs("results", exist_ok=True)
     fig.savefig(os.path.join("results", "ppo_inference.png"))
