@@ -327,6 +327,48 @@ def _assert_shapes_align(Xw, Yw, Mw, Ww, Rw, SW=None):
         assert len(SW) == n, f"SW length {len(SW)} != {n}"
 
 
+def _downsample_hold_wait(
+    X,
+    Y,
+    M,
+    W,
+    R,
+    SW=None,
+    I=None,
+    *,
+    betta: float = 0.0,
+    rng=None,
+):
+    if betta <= 0.0:
+        return (X, Y, M, W, R, SW) if I is None else (X, Y, M, W, R, SW, I)
+    cls = np.argmax(Y, axis=1)
+    hw_mask = np.isin(
+        cls, [ACTIONS.index("Hold"), ACTIONS.index("Wait")]
+    )
+    n_hw = int(hw_mask.sum())
+    if n_hw == 0:
+        return (X, Y, M, W, R, SW) if I is None else (X, Y, M, W, R, SW, I)
+    rng = rng or np.random.default_rng(0)
+    drop = int(n_hw * betta)
+    if drop <= 0:
+        return (X, Y, M, W, R, SW) if I is None else (X, Y, M, W, R, SW, I)
+    hw_idx = np.where(hw_mask)[0]
+    drop_idx = rng.choice(hw_idx, size=drop, replace=False)
+    keep = np.ones(len(Y), dtype=bool)
+    keep[drop_idx] = False
+    X = X[keep]
+    Y = Y[keep]
+    M = M[keep]
+    W = W[keep]
+    R = R[keep]
+    if SW is not None:
+        SW = SW[keep]
+    if I is not None:
+        I = I[keep]
+        return X, Y, M, W, R, SW, I
+    return X, Y, M, W, R, SW
+
+
 # ----------------- основной класс -----------------
 
 
@@ -344,6 +386,7 @@ class DatasetBuilderForYourColumns:
     batch_size: int = 256
     drop_cols: Optional[List[str]] = None
 
+    betta: float = 0.0
     sw_mode: Optional[Literal["R", "Volume", "ClassBalance"]] = None
     sw_R_power: float = 1.0
     sw_volume_col: str = "Volume"
@@ -426,6 +469,10 @@ class DatasetBuilderForYourColumns:
         tr = cut(Xall, Y, M, W, R, s0, s1)
         va = cut(Xall, Y, M, W, R, s1, s2)
         te = cut(Xall, Y, M, W, R, s2, s3)
+        if self.betta > 0.0:
+            tr = _downsample_hold_wait(*tr, betta=self.betta)
+            va = _downsample_hold_wait(*va, betta=self.betta)
+            te = _downsample_hold_wait(*te, betta=self.betta)
 
         if return_indices:
             (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr, Itr) = tr

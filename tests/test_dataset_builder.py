@@ -13,6 +13,7 @@ from scr.dataset_builder import (
     build_W_M_Y_R_from_df,
     _window_segment,
     extract_features,
+    _downsample_hold_wait,
 )
 
 
@@ -204,3 +205,63 @@ def test_class_balance_weights_excludes_unused_rows():
 
     assert np.allclose(builder.invfreq_, expected_invfreq)
     assert np.allclose(SWtr, expected_sw)
+
+
+def test_downsample_hold_wait():
+    n = 40
+    data = {
+        "f1": np.zeros(n, dtype=np.float32),
+        "f2": np.zeros(n, dtype=np.float32),
+        "Pos": np.zeros(n, dtype=np.float32),
+        "un_pnl": np.zeros(n, dtype=np.float32),
+        "Volume": np.arange(n, dtype=np.float32),
+    }
+    for a in ACTIONS:
+        data[f"Q_{a}"] = np.zeros(n, dtype=np.float32)
+        data[f"Mask_{a}"] = np.ones(n, dtype=np.float32)
+        data[f"A_{a}"] = np.zeros(n, dtype=np.float32)
+    for i in range(10):
+        data["A_Open"][i] = 1.0
+    for i in range(10, 20):
+        data["A_Close"][i] = 1.0
+    for i in range(20, 30):
+        data["A_Hold"][i] = 1.0
+    for i in range(30, 40):
+        data["A_Wait"][i] = 1.0
+    df = pd.DataFrame(data)
+
+    base_builder = DatasetBuilderForYourColumns(
+        seq_len=1,
+        feature_cols=["f1", "f2"],
+        account_cols=["Pos", "un_pnl"],
+        norm="none",
+        labels_from="a",
+        sw_mode="Volume",
+        sw_volume_col="Volume",
+    )
+    base_splits = base_builder.fit_transform(df)
+
+    builder = DatasetBuilderForYourColumns(
+        seq_len=1,
+        feature_cols=["f1", "f2"],
+        account_cols=["Pos", "un_pnl"],
+        norm="none",
+        labels_from="a",
+        sw_mode="Volume",
+        sw_volume_col="Volume",
+        betta=0.5,
+    )
+    splits = builder.fit_transform(df)
+
+    base_val = base_splits["val"]
+    down_val = splits["val"]
+    expected_val = _downsample_hold_wait(*base_val, betta=0.5)
+
+    for arr_d, arr_e in zip(down_val, expected_val):
+        assert np.array_equal(arr_d, arr_e)
+
+    cls_before = np.argmax(base_val[1], axis=1)
+    hw_before = np.isin(cls_before, [2, 3]).sum()
+    cls_after = np.argmax(down_val[1], axis=1)
+    hw_after = np.isin(cls_after, [2, 3]).sum()
+    assert hw_after == hw_before - int(hw_before * 0.5)
