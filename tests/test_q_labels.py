@@ -1,15 +1,16 @@
 import os
 import sys
 
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+
 import numpy as np
 import pandas as pd
-import pytest
 
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from scr.q_labels_matching import (
     next_exit_exec_arrays,
     enrich_q_labels_trend_one_side,
     soft_signal_labels_gaussian,
+    _simulate_positions_via_env,
 )
 
 # ---------------------------
@@ -30,6 +31,36 @@ def _mk_df(open_, high=None, low=None, close=None, sig=None):
             ),
         }
     )
+
+
+# ---------------------------
+# _simulate_positions_via_env
+# ---------------------------
+
+
+def test_simulate_positions_q_threshold():
+    open_px = np.ones(4)
+    df = pd.DataFrame(
+        {
+            "Open": open_px,
+            "High": open_px,
+            "Low": open_px,
+            "Close": open_px,
+            "Q_Open": [0.4, np.nan, np.nan, np.nan],
+            "Q_Close": [0.1, 0.3, 0.6, np.nan],
+            "Q_Hold": [0.05, 0.05, 0.05, np.nan],
+            "Q_Wait": [0.0, 0.0, 0.0, np.nan],
+        }
+    )
+
+    pos_def, _ = _simulate_positions_via_env(df, True, 0, 0)
+    assert pos_def.tolist() == [0, 1, 0, 0]
+
+    pos_thr, _ = _simulate_positions_via_env(df, True, 0, 0, q_threshold=0.59)
+    assert pos_thr.tolist() == [0, 1, 1, 0]
+
+    pos_wait, _ = _simulate_positions_via_env(df, True, 0, 0, q_threshold=0.6)
+    assert pos_wait.tolist() == [0, 0, 0, 0]
 
 
 # ---------------------------
