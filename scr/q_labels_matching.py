@@ -232,6 +232,9 @@ def enrich_q_labels_trend_one_side(
     lam: float = 0.9,
     fee: float = 0.0002,
     slippage: float = 0.0001,
+    scale_mode: str = "const",
+    scale_const: float = 2e-3,
+    vol_window: int = 20,
 ) -> pd.DataFrame:
     """TD-λ разметка абсолютных Q для действий Open/Close/Hold/Wait.
 
@@ -254,9 +257,9 @@ def enrich_q_labels_trend_one_side(
     exec_next_open = np.full(n, np.nan)
     exec_next_open[:-1] = Open[1:]
 
-    # комиссии
-    c_open = fee + slippage
-    c_close = fee + slippage
+    # комиссии на вход и выход
+    c_in = fee + slippage
+    c_out = fee + slippage
 
     has_next = np.arange(n) < n - 1
 
@@ -281,13 +284,10 @@ def enrich_q_labels_trend_one_side(
     m_open = has_next
     if np.any(m_open):
         if side_long:
-            entry_eff = (exec_next_open[m_open] * (1.0 + c_open))[:, None]
-            exit_eff = fut[m_open, :] * (1.0 - c_close)
-            vals = exit_eff / entry_eff - 1.0
+            vals = fut[m_open, :] / exec_next_open[m_open, None] - 1.0
         else:
-            entry_eff = (exec_next_open[m_open] * (1.0 - c_open))[:, None]
-            exit_eff = fut[m_open, :] * (1.0 + c_close)
-            vals = entry_eff / exit_eff - 1.0
+            vals = exec_next_open[m_open, None] / fut[m_open, :] - 1.0
+        vals -= (c_in + c_out)
         mask_cols = np.isfinite(vals)
         vals[~mask_cols] = np.nan
         weights = np.broadcast_to(w, vals.shape).copy()
@@ -299,16 +299,17 @@ def enrich_q_labels_trend_one_side(
         idx_rows = np.where(m_open)[0]
         Q_Open[idx_rows[valid_rows]] = q_vals[valid_rows]
 
-    # Close: 0, если есть следующий бар
-    Q_Close[has_next] = 0.0
+    # Close: фиксированный штраф комиссии выхода
+    Q_Close[has_next] = -c_out
 
     # Hold: смесь n-step, если есть будущее
     m_hold = has_next
     if np.any(m_hold):
         if side_long:
-            vals = (fut[m_hold, :] / exec_next_open[m_hold, None]) - 1.0
+            vals = fut[m_hold, :] / exec_next_open[m_hold, None] - 1.0
         else:
-            vals = (exec_next_open[m_hold, None] / fut[m_hold, :]) - 1.0
+            vals = exec_next_open[m_hold, None] / fut[m_hold, :] - 1.0
+        vals -= c_out
         mask_cols = np.isfinite(vals)
         vals[~mask_cols] = np.nan
         weights = np.broadcast_to(w, vals.shape).copy()
@@ -321,10 +322,19 @@ def enrich_q_labels_trend_one_side(
         Q_Hold[idx_rows[valid_rows]] = q_vals[valid_rows]
 
     # Итоговые Q-колонки (масштабируем для стабильности)
-    out["Q_Open"] = Q_Open.astype(np.float32) / 2e-3
-    out["Q_Close"] = Q_Close.astype(np.float32) / 2e-3
-    out["Q_Hold"] = Q_Hold.astype(np.float32) / 2e-3
-    out["Q_Wait"] = Q_Wait.astype(np.float32) / 2e-3
+    if scale_mode == "const":
+        scale = scale_const
+    elif scale_mode == "vol":
+        ret = pd.Series(Close).pct_change()
+        vol = ret.rolling(vol_window).std().shift(1).to_numpy()
+        scale = np.where(np.isfinite(vol) & (vol > 0.0), vol, scale_const)
+    else:
+        raise ValueError("scale_mode ∈ {'const','vol'}")
+
+    out["Q_Open"] = (Q_Open / scale).astype(np.float32)
+    out["Q_Close"] = (Q_Close / scale).astype(np.float32)
+    out["Q_Hold"] = (Q_Hold / scale).astype(np.float32)
+    out["Q_Wait"] = (Q_Wait / scale).astype(np.float32)
 
     # Симуляция позиции по максимальному Q
     pos, entry_eff = _simulate_positions_via_env(out, side_long, fee, slippage)

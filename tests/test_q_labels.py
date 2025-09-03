@@ -125,6 +125,50 @@ def test_nan_inputs_propagate_to_q_and_masks():
 
 
 # ---------------------------
+# Комиссии
+# ---------------------------
+
+
+def test_commissions_subtracted_from_q():
+    open_px = np.array([100.0, 100.0, 100.0])
+    df = _mk_df(open_px)
+    out = enrich_q_labels_trend_one_side(
+        df, H_max=1, side_long=True, fee=0.001, slippage=0.002
+    )
+    c = 0.001 + 0.002
+    scale = 2e-3
+    np.testing.assert_allclose(out.loc[0, "Q_Open"], -(2 * c) / scale, rtol=1e-7)
+    np.testing.assert_allclose(out.loc[0, "Q_Hold"], -c / scale, rtol=1e-7)
+    np.testing.assert_allclose(out.loc[0, "Q_Close"], -c / scale, rtol=1e-7)
+
+
+def test_volatility_scaling_divides_by_causal_vol():
+    open_px = np.array([1.0, 1.2, 1.0, 1.3, 1.1, 1.4])
+    df = _mk_df(open_px)
+    out = enrich_q_labels_trend_one_side(
+        df,
+        H_max=2,
+        side_long=True,
+        fee=0,
+        slippage=0,
+        scale_mode="vol",
+        vol_window=2,
+    )
+    ret = pd.Series(open_px).pct_change()
+    vol = ret.rolling(2).std().shift(1).to_numpy()
+    vol = np.where(np.isfinite(vol) & (vol > 0.0), vol, 2e-3)
+    lam = 0.9
+    w = np.array([(1 - lam) * (lam ** (k - 1)) for k in range(1, 3)], dtype=np.float64)
+    w = w / w.sum()
+    idx = 3
+    r2 = open_px[idx + 2] / open_px[idx + 1] - 1.0
+    q_unscaled = w[1] * r2
+    expected = q_unscaled / vol[idx]
+    np.testing.assert_allclose(out.loc[idx, "Q_Open"], expected, rtol=1e-7)
+    np.testing.assert_allclose(out.loc[idx, "Q_Hold"], expected, rtol=1e-7)
+
+
+# ---------------------------
 # soft_signal_labels_gaussian
 # ---------------------------
 
