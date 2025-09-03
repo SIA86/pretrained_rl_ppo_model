@@ -249,15 +249,14 @@ def enrich_q_labels_trend_one_side(
     pos, entry_eff = simulate_position_one_side(
         Open, buy_sig, sell_sig, side_long=side_long
     )
-    out["Pos"] = pos
-
+    out["Pos"] = pos 
     # метрики текущей позиции
     unreal, flat_steps, hold_steps, drawdown = calc_position_metrics(
         pos, entry_eff, High, Low, Close, side_long=side_long
     )
     out["Unreal_PnL"] = unreal.astype(np.float32)
-    out["Flat_Steps"] = (flat_steps / 1000).astype(np.float32)
-    out["Hold_Steps"] = (hold_steps / 1000).astype(np.float32)
+    out["Flat_Steps"] = (flat_steps / 1000).astype(np.float32) 
+    out["Hold_Steps"] = (hold_steps / 1000).astype(np.float32) 
     out["Drawdown"] = drawdown.astype(np.float32)
 
     # исполнение "сейчас" — next open
@@ -562,10 +561,10 @@ def enrich_q_labels_trend_one_side(
         raise ValueError("mode ∈ {'exit','horizon','tdlambda'}")
 
     # итоговые колонки
-    out["Q_Open"] = Q_Open.astype(np.float32)
-    out["Q_Close"] = Q_Close.astype(np.float32)
-    out["Q_Hold"] = Q_Hold.astype(np.float32)
-    out["Q_Wait"] = Q_Wait.astype(np.float32)
+    out["Q_Open"] = Q_Open.astype(np.float32) / 2e-3
+    out["Q_Close"] = Q_Close.astype(np.float32) / 2e-3
+    out["Q_Hold"] = Q_Hold.astype(np.float32) / 2e-3
+    out["Q_Wait"] = Q_Wait.astype(np.float32) / 2e-3
 
     out["Mask_Open"] = M_Open
     out["Mask_Close"] = M_Close
@@ -618,8 +617,8 @@ def soft_signal_labels_gaussian(
     unreal, flat_steps, hold_steps, drawdown = calc_position_metrics(
         pos, entry_px, High, Low, Close, side_long=side_long
     )
-    out["Unreal_PnL"] = unreal.astype(np.float32)
-    out["Flat_Steps"] = (flat_steps / 1000).astype(np.float32)
+    out["Unreal_PnL"] = unreal.astype(np.float32) 
+    out["Flat_Steps"] = (flat_steps / 1000).astype(np.float32) 
     out["Hold_Steps"] = (hold_steps / 1000).astype(np.float32)
     out["Drawdown"] = drawdown.astype(np.float32)
 
