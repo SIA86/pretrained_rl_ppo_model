@@ -1,10 +1,9 @@
 """PPO training loop built on top of the residual LSTM model.
 
 The module wires together the pretrained residual LSTM policy from
-``residual_lstm.py`` with the ``BacktestEnv`` environment.  Only a minimal
-subset of PPO is implemented – enough to demonstrate how an already trained
-supervised policy can be fine‑tuned with reinforcement learning.
-"""
+``residual_lstm.py`` with the ``BacktestEnv`` environment.  It adds
+teacher‑guided KL regularisation with a decaying coefficient and profit‑based
+early stopping to fine‑tune the supervised model via reinforcement learning.
 
 from __future__ import annotations
 
@@ -152,7 +151,6 @@ def ppo_update(
             b_adv = (b_adv - tf.reduce_mean(b_adv)) / (
                 tf.math.reduce_std(b_adv) + 1e-8
             )
-
 
             with tf.GradientTape(persistent=True) as tape:
                 logits = actor(b_obs, training=True)

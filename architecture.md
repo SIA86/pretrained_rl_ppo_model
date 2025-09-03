@@ -127,3 +127,5 @@ Hold: o серый.
 | `normalisation.py` | Класс `NormalizationStats` для нормализации признаков (zscore, minmax, robust) и обработки пропусков. |
 | `residual_lstm.py` | Резидуальная LSTM‑сеть и функции для применения масок действий, лосса и accuracy. |
 | `visualisation.py` | Построение свечных графиков с отображением сигналов стратегии и лучших действий по Q‑меткам. |
+| `optuna_tuner.py` | Подбор гиперпараметров residual LSTM через библиотеку Optuna. |
+| `ppo_training.py` | Обучение PPO-агента с предобученной residual LSTM и средой бэктеста. |
