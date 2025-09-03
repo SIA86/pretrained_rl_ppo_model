@@ -63,138 +63,7 @@ def test_exit_execution_is_next_open_short():
 
 
 # ---------------------------
-# mode='exit'
-# ---------------------------
-
-
-def test_exit_mode_hold_uses_exec_next_open_price():
-    """
-    buy@0 (exec t=1), sell@2 (exec t=3).
-    На t=1 позиция уже открыта, поэтому:
-    Hold(t=1) = Open[3]/Open[2]-1 = 120/110 - 1
-    """
-    open_px = np.array([100.0, 105.0, 110.0, 120.0])
-    sig = np.array([+1, 0, -1, 0])  # buy на t=0, sell на t=2
-    df = _mk_df(open_px, sig=sig)
-
-    out = enrich_q_labels_trend_one_side(
-        df, mode="exit", side_long=True, fee=0, slippage=0
-    )
-
-    assert out.loc[0, "Mask_Hold"] == 0  # на t=0 позиции ещё нет
-    assert out.loc[1, "Mask_Hold"] == 1
-    np.testing.assert_allclose(out.loc[1, "Q_Hold"], 120 / 110 - 1, rtol=1e-7)
-
-
-def test_exit_mode_open_includes_both_fees_long():
-    """
-    В Open должны применяться издержки и на вход, и на выход.
-    """
-    open_px = np.array([100.0, 110.0, 121.0, 121.0])  # рост ~10% затем ~10%
-    sig = np.array([0, 0, -1, 0])  # sell@2 -> exec@3
-    df = _mk_df(open_px, sig=sig)
-
-    fee = 10e-4  # 10 bps
-    slp = 20e-4  # 20 bps
-    c = fee + slp
-
-    out = enrich_q_labels_trend_one_side(
-        df, mode="exit", side_long=True, fee=fee, slippage=slp
-    )
-    # На t=0 flat, has exit -> Open валиден
-    assert out.loc[0, "Mask_Open"] == 1
-    # Теоретическое ожидание:
-    # entry_eff = Open[1] * (1 + c) = 110*(1+c)
-    # exit_eff  = Open[3] * (1 - c) = 121*(1-c)
-    expected = (121 * (1 - c)) / (110 * (1 + c)) - 1.0
-    np.testing.assert_allclose(out.loc[0, "Q_Open"], expected, rtol=1e-7)
-
-
-def test_exit_mode_long_short_symmetry_open_hold():
-    """
-    Симметрия Open для long/short при mode='exit' без комиссий:
-    R_long = O[exec_exit]/O[exec_entry] - 1
-    R_short= O[exec_entry]/O[exec_exit] - 1 = 1/(1+R_long) - 1
-    """
-    open_px = np.array([100.0, 90.0, 80.0, 120.0, 110.0])
-
-    # LONG: exit определяется sell-сигналом -> sell@2 => exec@3
-    sig_long = np.array([0, 0, -1, 0, 0])
-    df_long = _mk_df(open_px, sig=sig_long)
-    out_long = enrich_q_labels_trend_one_side(
-        df_long, mode="exit", side_long=True, fee=0, slippage=0
-    )
-
-    # SHORT: exit определяется buy-сигналом -> buy@2 => exec@3
-    sig_short = np.array([0, 0, +1, 0, 0])
-    df_short = _mk_df(open_px, sig=sig_short)
-    out_short = enrich_q_labels_trend_one_side(
-        df_short, mode="exit", side_long=False, fee=0, slippage=0
-    )
-
-    # t=0: оба действия Open валидны (есть будущий exec-выход >= t+2)
-    assert out_long.loc[0, "Mask_Open"] == 1
-    assert out_short.loc[0, "Mask_Open"] == 1
-
-    R_long = out_long.loc[0, "Q_Open"]
-    R_short = out_short.loc[0, "Q_Open"]
-    # Проверяем точную взаимосвязь (без комиссий):
-    # R_short == 1/(1+R_long) - 1
-    np.testing.assert_allclose(R_short, 1.0 / (1.0 + R_long) - 1.0, rtol=1e-7)
-
-    # Для Hold симметрия зависит от факта наличия позиции; валидность масок допустима 0/1
-    assert out_long.loc[1, "Mask_Hold"] in (0, 1)
-    assert out_short.loc[1, "Mask_Hold"] in (0, 1)
-
-
-# ---------------------------
-# mode='horizon'
-# ---------------------------
-
-
-def test_horizon_basic_open_hold_long():
-    """
-    H=2: Open(t=0) = Open[2]/Open[1]-1; Hold(t=1) = Open[3]/Open[2]-1.
-    """
-    open_px = np.array([100.0, 110.0, 121.0, 133.1])
-    df = _mk_df(open_px)
-
-    out = enrich_q_labels_trend_one_side(
-        df, mode="horizon", horizon=2, side_long=True, fee=0, slippage=0
-    )
-    assert out.loc[0, "Mask_Open"] == 1
-    np.testing.assert_allclose(out.loc[0, "Q_Open"], 121 / 110 - 1, rtol=1e-7)
-
-    # Чтобы Hold на t=1 был валиден, позиция должна быть открыта к t=1:
-    sig = np.array([+1, 0, 0, 0])
-    df2 = _mk_df(open_px, sig=sig)
-    out2 = enrich_q_labels_trend_one_side(
-        df2, mode="horizon", horizon=2, side_long=True, fee=0, slippage=0
-    )
-    assert out2.loc[1, "Mask_Hold"] == 1
-    np.testing.assert_allclose(out2.loc[1, "Q_Hold"], 133.1 / 121 - 1, rtol=1e-7)
-
-
-def test_horizon_commissions_monotonicity_open():
-    """
-    Рост комиссий не должен увеличивать Q_Open.
-    """
-    open_px = np.array([100.0, 110.0, 120.0, 130.0])
-    df = _mk_df(open_px)
-
-    out_low_fee = enrich_q_labels_trend_one_side(
-        df, mode="horizon", horizon=2, side_long=True, fee=1e-4, slippage=1e-4
-    )
-    out_hi_fee = enrich_q_labels_trend_one_side(
-        df, mode="horizon", horizon=2, side_long=True, fee=20e-4, slippage=20e-4
-    )
-    idx = np.where(out_low_fee["Mask_Open"] == 1)[0]
-    assert len(idx) > 0
-    assert all(out_hi_fee.loc[i, "Q_Open"] <= out_low_fee.loc[i, "Q_Open"] for i in idx)
-
-
-# ---------------------------
-# mode='tdlambda'
+# TD-λ
 # ---------------------------
 
 
@@ -206,55 +75,11 @@ def test_tdlambda_weighted_average_open_long():
     open_px = np.array([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
     df = _mk_df(open_px)
     out = enrich_q_labels_trend_one_side(
-        df, mode="tdlambda", H_max=3, lam=0.5, side_long=True, fee=0, slippage=0
+        df, H_max=3, lam=0.5, side_long=True, fee=0, slippage=0
     )
     # t=0: доступны n=1..3 → маска валидна
     assert out.loc[0, "Mask_Open"] == 1
     assert not np.isnan(out.loc[0, "Q_Open"])
-
-
-def test_tdlambda_mae_penalty_decreases_hold():
-    """
-    Создаём неблагоприятный дип в Low — штраф MAE должен уменьшать Q_Hold (при валидной позиции).
-    """
-    N = 12
-    open_px = np.full(N, 100.0)
-    high_px = np.full(N, 101.0)
-    low_px = np.full(N, 100.0)
-    low_px[4] = 90.0  # дип
-
-    sig = np.zeros(N, dtype=int)
-    sig[0] = +1  # buy@0 -> pos с t=1
-    sig[10] = -1  # sell@10 -> exec@11
-
-    df = _mk_df(open_px, high=high_px, low=low_px, sig=sig)
-
-    out_pen = enrich_q_labels_trend_one_side(
-        df,
-        mode="tdlambda",
-        H_max=6,
-        lam=0.9,
-        side_long=True,
-        use_mae_penalty=True,
-        mae_lambda=0.5,
-        mae_apply_to="hold",
-        fee=0,
-        slippage=0,
-    )
-    out_nop = enrich_q_labels_trend_one_side(
-        df,
-        mode="tdlambda",
-        H_max=6,
-        lam=0.9,
-        side_long=True,
-        use_mae_penalty=False,
-        fee=0,
-        slippage=0,
-    )
-    # Возьмём индексы, где Hold валиден
-    idxs = np.where((out_pen["Mask_Hold"] == 1) & (out_nop["Mask_Hold"] == 1))[0]
-    assert len(idxs) > 0
-    assert any(out_pen.loc[i, "Q_Hold"] < out_nop.loc[i, "Q_Hold"] for i in idxs)
 
 
 def test_tdlambda_masks_invalid_when_no_future():
@@ -265,7 +90,7 @@ def test_tdlambda_masks_invalid_when_no_future():
     open_px = np.array([10.0, 11.0, np.nan, np.nan])
     df = _mk_df(open_px)
 
-    out = enrich_q_labels_trend_one_side(df, mode="tdlambda", H_max=3, side_long=True)
+    out = enrich_q_labels_trend_one_side(df, H_max=3, side_long=True)
     # Последний бар точно невалиден
     last = len(df) - 1
     assert out.loc[last, "Mask_Open"] == 0
@@ -291,7 +116,7 @@ def test_nan_inputs_propagate_to_q_and_masks():
     df = _mk_df(open_px)
 
     out = enrich_q_labels_trend_one_side(
-        df, mode="horizon", horizon=2, side_long=True, fee=0, slippage=0
+        df, H_max=2, side_long=True, fee=0, slippage=0
     )
     # На t=0 exec_next_open = Open[1] = NaN -> Open/Wait только маска Wait=1, Open=0
     assert out.loc[0, "Mask_Open"] == 0 or np.isnan(out.loc[0, "Q_Open"])
@@ -388,7 +213,7 @@ def test_position_metrics_are_computed():
         df, side_long=True, blur_window=1, blur_sigma=1.0, mae_lambda=0.0
     )
     out_q = enrich_q_labels_trend_one_side(
-        df, mode="exit", side_long=True, fee=0, slippage=0
+        df, side_long=True, fee=0, slippage=0
     )
 
     expected_unreal = np.array([0.0, 0.0, 105 / 110 - 1.0, 120 / 110 - 1.0])
