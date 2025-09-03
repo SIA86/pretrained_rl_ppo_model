@@ -1,10 +1,9 @@
-"""Residual LSTM model and mask-aware utilities.
+"""Модель residual LSTM и утилиты, учитывающие маску действий.
 
-This module provides a residual stacked LSTM network that produces raw logits
-for action selection. The input sequence is processed by stacked LSTMs and
-the validity mask is applied outside the model via :func:`apply_action_mask`
-before softmax is computed in the training loop. Mask-aware loss and accuracy
-helpers are also included.
+Модуль реализует остаточную стековую LSTM, выдающую логиты для выбора
+действия. Последовательность обрабатывается стеком LSTM, а маска валидности
+применяется снаружи через :func:`apply_action_mask` перед softmax в тренировке.
+Также приведены функции потерь и точности с учётом маски.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ def build_stacked_residual_lstm(
     dropout: float = 0.2,
     ln_eps: float = 1e-5,
 ) -> keras.Model:
-    """Build a residual stacked LSTM network with a single input."""
+    """Построить остаточную стековую LSTM с одним входом."""
 
     def _branch(inp, dim, prefix: str):
         x = inp
@@ -62,10 +61,10 @@ def build_stacked_residual_lstm(
 def apply_action_mask(
     logits: tf.Tensor, mask: tf.Tensor, very_neg: float = VERY_NEG
 ) -> tf.Tensor:
-    """Apply validity mask to logits.
+    """Применить маску валидности к логитам.
 
-    Invalid actions (where ``mask == 0``) receive a large negative shift before
-    softmax is applied.
+    Недопустимые действия (``mask == 0``) получают большое отрицательное
+    смещение перед применением softmax.
     """
 
     # dtype-aware very negative value to avoid ``-inf`` in fp16
@@ -82,7 +81,7 @@ def apply_action_mask(
 def masked_logits_and_probs(
     logits: tf.Tensor, mask: tf.Tensor
 ) -> tuple[tf.Tensor, tf.Tensor]:
-    """Return masked logits and corresponding probabilities."""
+    """Вернуть маскированные логиты и соответствующие вероятности."""
 
     masked = apply_action_mask(logits, mask)
     has_valid = tf.reduce_any(tf.cast(mask, tf.bool), axis=-1, keepdims=True)
@@ -99,7 +98,7 @@ def masked_categorical_crossentropy(
     sample_w: Optional[tf.Tensor] = None,
     eps: float = 1e-8,
 ) -> tf.Tensor:
-    """Cross-entropy with action mask and optional sample weights."""
+    """Кросс‑энтропия с маской действий и опциональными весами."""
 
     dtype = logits.dtype
     mask = tf.cast(mask, dtype)
@@ -132,7 +131,7 @@ def masked_accuracy(
     mask: tf.Tensor,
     sample_w: Optional[tf.Tensor] = None,
 ) -> tf.Tensor:
-    """Accuracy metric aware of action mask and sample weights."""
+    """Метрика точности, учитывающая маску действий и веса."""
 
     dtype = logits.dtype
     mask = tf.cast(mask, dtype)

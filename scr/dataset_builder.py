@@ -1,10 +1,10 @@
-"""Utilities for building windowed datasets with optional sample weights.
+"""Утилиты для построения оконных датасетов с опциональными весами.
 
-This module contains helper functions for cleaning Q-values and masks,
-extracting features, windowing time series and constructing TensorFlow
-`tf.data.Dataset` objects.  The code is largely adapted from the user's
-specification and is designed to work with DataFrames produced by
-`q_labels_matching`.
+Модуль включает функции для очистки Q‑значений и масок, извлечения
+признаков, нарезки временных рядов окнами и создания объектов
+``tf.data.Dataset``. Код адаптирован из пользовательской спецификации и
+рассчитан на работу с DataFrame, подготовленным модулем
+``q_labels_matching``.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import pandas as pd
 from .normalisation import NormalizationStats
 
 # ---------------------------------------------------------------------------
-# Constants describing action columns
+# Константы, описывающие колоноки действий
 # ---------------------------------------------------------------------------
 
 ACTIONS = ["Open", "Close", "Hold", "Wait"]
@@ -29,18 +29,17 @@ A_COLS = {a: f"A_{a}" for a in ACTIONS}
 
 
 def _sanitize_W_M(W: np.ndarray, M: np.ndarray):
-    """Clean Q-values ``W`` and masks ``M``.
+    """Очистить Q‑значения ``W`` и маски ``M``.
 
-    Non-finite values in ``W`` where the corresponding mask is ``1`` are
-    treated as invalid actions: the mask is set to ``0`` and the value is
-    replaced with ``0``.  Rows with no valid actions are flagged so they can
-    be filtered later.
+    Нефинитные элементы ``W`` при маске ``1`` считаются недопустимыми
+    действиями: соответствующая маска обнуляется, а значение заменяется на
+    ``0``. Строки без валидных действий помечаются для последующей фильтрации.
 
-    Returns
+    Возвращает
     -------
     tuple
-        ``(W_clean, M_clean, row_valid)`` where ``row_valid`` is a boolean
-        array indicating rows that still have at least one valid action.
+        ``(W_clean, M_clean, row_valid)`` где ``row_valid`` — булев массив,
+        показывающий, в каких строках осталось хотя бы одно допустимое действие.
     """
 
     assert W.shape == M.shape
@@ -60,7 +59,7 @@ def _sanitize_W_M(W: np.ndarray, M: np.ndarray):
     return W.astype(np.float32), M.astype(np.float32), row_valid.astype(np.bool_)
 
 
-# ----------------- utils -----------------
+# ----------------- утилиты -----------------
 
 
 def _clean_soft_labels(Y: np.ndarray, eps: float = 1e-8) -> np.ndarray:
@@ -147,7 +146,7 @@ def build_W_M_Y_R_from_df(
         very_neg = -1e9
         logits_for_R = np.where(M > 0.0, W, very_neg)
         a_star = np.argmax(logits_for_R, axis=1)
-        # choose teacher's action only among valid ones; no valid -> R=0
+        # выбираем действие teacher'а только среди допустимых; иначе R=0
         R = np.where(
             row_valid,
             W[np.arange(len(W)), a_star],
@@ -303,7 +302,7 @@ def build_tf_dataset(
     shuffle=True,
     cache=True,
 ):
-    import tensorflow as tf  # local import to avoid hard dependency at module import
+    import tensorflow as tf  # локальный импорт, чтобы избежать жёсткой зависимости при импорте модуля
 
     if SW is None:
         ds = tf.data.Dataset.from_tensor_slices((Xw, (Yw, Mw, Ww, Rw)))
@@ -312,7 +311,7 @@ def build_tf_dataset(
             (Xw, (Yw, Mw, Ww, Rw, SW.astype(np.float32).reshape(-1)))
         )
     if cache:
-        # cache before shuffle so each epoch reshuffles freshly
+        # кешируем перед перемешиванием, чтобы каждую эпоху перемешивать заново
         ds = ds.cache()
     if shuffle:
         ds = ds.shuffle(min(len(Xw), 100_000), reshuffle_each_iteration=True)
@@ -328,7 +327,7 @@ def _assert_shapes_align(Xw, Yw, Mw, Ww, Rw, SW=None):
         assert len(SW) == n, f"SW length {len(SW)} != {n}"
 
 
-# ----------------- главный класс -----------------
+# ----------------- основной класс -----------------
 
 
 @dataclass

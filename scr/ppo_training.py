@@ -1,9 +1,10 @@
-"""PPO training loop built on top of the residual LSTM model.
+"""Цикл обучения PPO поверх предобученной модели residual LSTM.
 
-The module wires together the pretrained residual LSTM policy from
-``residual_lstm.py`` with the ``BacktestEnv`` environment.  It adds
-teacher‑guided KL regularisation with a decaying coefficient and profit‑based
-early stopping to fine‑tune the supervised model via reinforcement learning.
+Модуль связывает предварительно обученную политику из ``residual_lstm.py`` с
+средой ``BacktestEnv``. Дополнительно используется KL‑регуляризация по
+teacher‑модели с затухающим коэффициентом и ранняя остановка по прибыли, что
+позволяет дообучить супервизорную модель методом обучения с подкреплением.
+"""
 
 from __future__ import annotations
 
@@ -24,7 +25,7 @@ NUM_ACTIONS = 4
 def build_actor_critic(
     seq_len: int, feature_dim: int, num_actions: int = NUM_ACTIONS
 ) -> Tuple[keras.Model, keras.Model]:
-    """Create actor and critic networks sharing the same architecture."""
+    """Создать сети актёра и критика с общей архитектурой."""
 
     actor = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=num_actions)
     critic = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=1)
@@ -51,7 +52,7 @@ def collect_trajectories(
     gamma: float = 0.99,
     lam: float = 0.95,
 ) -> Trajectory:
-    """Roll out the current policy and compute advantages via GAE."""
+    """Сгенерировать траектории и посчитать преимущества по GAE."""
 
     obs_buf: List[np.ndarray] = []
     act_buf: List[int] = []
@@ -126,8 +127,8 @@ def ppo_update(
     kl_coef: float = 0.1,
     kl_decay: float = 0.99,
 ) -> Tuple[float, Dict[str, float]]:
-    """Perform several epochs of PPO updates.
-    Returns the updated KL coefficient and a dictionary of metrics."""
+    """Выполнить несколько эпох обновления PPO.
+    Возвращает обновлённый коэффициент KL и словарь метрик."""
 
     obs = tf.convert_to_tensor(traj.obs)
     acts = tf.convert_to_tensor(traj.actions)
@@ -216,7 +217,7 @@ def ppo_update(
 def evaluate_profit(
     env: BacktestEnv, actor: keras.Model, seq_len: int, feature_dim: int
 ) -> float:
-    """Run policy in the environment and return final equity."""
+    """Запустить политику в среде и вернуть итоговый капитал."""
 
     obs = env.reset()
     while True:
@@ -242,7 +243,7 @@ def train(
     kl_decay: float = 0.99,
     early_stop_patience: int = 10,
 ):
-    """High level training routine."""
+    """Основной цикл обучения PPO."""
 
     actor, critic = build_actor_critic(seq_len, feature_dim)
     teacher = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=NUM_ACTIONS)

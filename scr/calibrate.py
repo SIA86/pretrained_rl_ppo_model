@@ -1,10 +1,10 @@
-"""Model calibration utilities via temperature scaling.
+"""Калибровка модели с помощью температурного масштабирования.
 
-This module provides a small set of helpers to post‑hoc calibrate a
-classification model that accepts ``(xb, mb)`` inputs and predicts four
-actions.  The main entry point is :func:`calibrate_model` which performs
-temperature scaling on a validation dataset and reports calibration
-metrics.
+Модуль содержит вспомогательные функции для пост‑фактум калибровки
+классификатора, который принимает входы ``(xb, mb)`` и предсказывает четыре
+действия. Главная точка входа — функция :func:`calibrate_model`, выполняющая
+температурное масштабирование на валидационном наборе и рассчитывающая
+метрики калибровки.
 """
 
 from __future__ import annotations
@@ -19,15 +19,15 @@ import matplotlib.pyplot as plt
 
 
 class TemperatureScaling(tf.keras.layers.Layer):
-    """Calibrate logits by dividing them with a temperature parameter.
+    """Масштабирование логитов с помощью параметра температуры.
 
-    Parameters
+    Параметры
     ----------
     init_T:
-        Initial temperature value.  Must be strictly positive.
+        Начальное значение температуры (строго положительное).
     per_class:
-        If ``True`` a separate temperature is learned for each class,
-        otherwise a single scalar temperature is optimised.
+        Если ``True`` — обучается отдельная температура для каждого класса,
+        иначе оптимизируется один скаляр.
     """
 
     def __init__(self, init_T: float = 1.0, per_class: bool = False, name: str = "temperature_scaling", **kwargs: Any) -> None:
@@ -56,12 +56,12 @@ class TemperatureScaling(tf.keras.layers.Layer):
 
 
 # ---------------------------------------------------------------------------
-# Metrics and plots
+# Метрики и графики
 # ---------------------------------------------------------------------------
 
 
 def compute_ece(probs: np.ndarray, y_true: np.ndarray, n_bins: int = 15) -> float:
-    """Expected Calibration Error (ECE)."""
+    """Ожидаемая ошибка калибровки (Expected Calibration Error, ECE)."""
 
     confidences = probs.max(axis=1)
     preds = probs.argmax(axis=1)
@@ -79,7 +79,7 @@ def compute_ece(probs: np.ndarray, y_true: np.ndarray, n_bins: int = 15) -> floa
 
 
 def plot_reliability_diagram(probs: np.ndarray, y_true: np.ndarray, n_bins: int = 15, title: str = "Reliability") -> None:
-    """Plot a reliability diagram for the given probabilities."""
+    """Построить диаграмму надёжности для переданных вероятностей."""
 
     confidences = probs.max(axis=1)
     preds = probs.argmax(axis=1)
@@ -106,12 +106,12 @@ def plot_reliability_diagram(probs: np.ndarray, y_true: np.ndarray, n_bins: int 
 
 
 # ---------------------------------------------------------------------------
-# Calibration workflow
+# Процесс калибровки
 # ---------------------------------------------------------------------------
 
 
 def _collect_validation_arrays(val_ds: tf.data.Dataset, num_classes: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Materialise the validation dataset to NumPy arrays."""
+    """Преобразовать валидационный датасет в массивы NumPy."""
 
     from .train_eval import _unpack_batch
 
@@ -145,10 +145,9 @@ def calibrate_model(
     save_dir: str = "artifacts/calibration",
     plot: bool = True,
 ) -> Dict[str, Any]:
-    """Perform temperature scaling on ``model`` using ``val_ds``.
+    """Выполнить температурное масштабирование ``model`` на ``val_ds``.
 
-    Returns a dictionary with the calibration metrics and the learnt
-    temperature.
+    Возвращает словарь с метриками калибровки и найденной температурой.
     """
 
     num_classes = int(model.output_shape[-1])

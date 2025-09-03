@@ -1,4 +1,4 @@
-"""Utilities for visualising strategy signals and Q‑labelled actions."""
+"""Утилиты для визуализации стратегических сигналов и Q‑меток действий."""
 
 from typing import Iterable, Tuple
 
@@ -21,7 +21,7 @@ def _candles(
     dn: str = "#ef5350",
     alpha: float = 1.0,
 ) -> None:
-    """Render candlesticks on ``ax``."""
+    """Отрисовать свечи на оси ``ax``."""
     for i in range(len(t)):
         color = up if c[i] >= o[i] else dn
         ax.vlines(t[i], l[i], h[i], linewidth=1.0, color=color, alpha=alpha)
@@ -52,7 +52,7 @@ def _candles(
 def actions_from_pos_one_side(
     pos: np.ndarray, assume_exec_next_bar: bool = True
 ) -> Tuple[list[int], list[int]]:
-    """Return indices of open/close signals for a single‑side position array."""
+    """Получить индексы сигналов открытия/закрытия для односторонней позиции."""
     n = len(pos)
     shift = 1 if assume_exec_next_bar else 0
     open_ix, close_ix = [], []
@@ -78,7 +78,7 @@ def _resolve_series(
     label: str,
     align_mode: str = "right",
 ) -> np.ndarray:
-    """Align an indicator series to length ``N`` for plotting."""
+    """Привести индикаторный ряд к длине ``N`` для отображения."""
     if isinstance(src, str):
         if src not in df.columns:
             raise ValueError(f"indicator '{label}': column '{src}' not found")
@@ -120,10 +120,9 @@ def plot_enriched_actions_one_side(
     indicators_panels: dict | None = None,
     assume_exec_next_bar: bool = True,
 ) -> None:
-    """Plot price with strategy signals and best actions.
-    ``enriched_df`` must contain price columns and either ``Q_*`` or
-    ``A_*`` action data. Column ``Pos`` is required only when
-    ``show_reference`` is ``True``.
+    """Отобразить цену со стратегическими сигналами и лучшими действиями.
+    ``enriched_df`` должен содержать ценовые колонки и либо данные ``Q_*``,
+    либо ``A_*``. Колонка ``Pos`` требуется только если ``show_reference=True``.
     """
     cols = set(enriched_df.columns)
     need_base = {"Open", "High", "Low", "Close"}

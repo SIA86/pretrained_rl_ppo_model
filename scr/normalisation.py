@@ -6,16 +6,16 @@ import numpy as np
 
 @dataclass
 class NormalizationStats:
-    """Compute statistics and apply feature-wise normalization.
+    """Расчёт статистик и покомпонентное нормирование признаков.
 
-    Parameters
+    Параметры
     ----------
     kind:
-        Normalization strategy. Supported values:
-        ``'zscore'`` (mean/std), ``'minmax'`` (range), ``'robust'``
-        (median/IQR).
+        Стратегия нормализации. Поддерживаются:
+        ``'zscore'`` (среднее/стандартное отклонение), ``'minmax'`` (размах),
+        ``'robust'`` (медиана/IQR).
     eps:
-        Small constant to avoid division by zero.
+        Малое число для избежания деления на ноль.
     """
 
     kind: Literal["zscore", "minmax", "robust"] = "zscore"
@@ -30,7 +30,7 @@ class NormalizationStats:
     median: Optional[np.ndarray] = None
 
     def fit(self, X_train: np.ndarray) -> "NormalizationStats":
-        """Fit normalization statistics on training data."""
+        """Подобрать статистики нормализации на обучающих данных."""
         Xf = X_train.astype(np.float32, copy=True)
         Xf[~np.isfinite(Xf)] = np.nan
         self.imputer_mean = np.nanmean(Xf, axis=0)
@@ -54,7 +54,7 @@ class NormalizationStats:
         return self
 
     def _impute(self, X: np.ndarray) -> np.ndarray:
-        """Replace non-finite values with column means."""
+        """Заменить нечисловые значения средними по столбцам."""
         X = X.astype(np.float32, copy=True)
         bad = ~np.isfinite(X)
         if bad.any():
@@ -63,7 +63,7 @@ class NormalizationStats:
         return X
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        """Apply normalization to an array."""
+        """Применить нормализацию к массиву."""
         X = self._impute(X)
         if self.kind == "zscore":
             return (X - self.mean) / self.std
