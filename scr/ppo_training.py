@@ -4,7 +4,6 @@ The module wires together the pretrained residual LSTM policy from
 ``residual_lstm.py`` with the ``BacktestEnv`` environment.  It adds
 teacher‑guided KL regularisation with a decaying coefficient and profit‑based
 early stopping to fine‑tune the supervised model via reinforcement learning.
-"""
 
 from __future__ import annotations
 
@@ -128,7 +127,6 @@ def ppo_update(
     kl_decay: float = 0.99,
 ) -> Tuple[float, Dict[str, float]]:
     """Perform several epochs of PPO updates.
-
     Returns the updated KL coefficient and a dictionary of metrics."""
 
     obs = tf.convert_to_tensor(traj.obs)
@@ -173,7 +171,6 @@ def ppo_update(
 
                 value = critic(b_obs, training=True)[:, 0]
                 value_loss = tf.reduce_mean(tf.square(b_ret - value))
-
                 t_kl = tf.constant(0.0)
                 if teacher is not None and kl_coef > 0.0:
                     t_logits = teacher(b_obs, training=False)
@@ -192,7 +189,6 @@ def ppo_update(
             c_grads = tape.gradient(critic_loss, critic.trainable_variables)
             actor_opt.apply_gradients(zip(a_grads, actor.trainable_variables))
             critic_opt.apply_gradients(zip(c_grads, critic.trainable_variables))
-
             pi_losses.append(float(policy_loss))
             v_losses.append(float(value_loss))
             entropies.append(float(entropy))
@@ -234,7 +230,6 @@ def evaluate_profit(
             break
     return float(env.equity)
 
-
 def train(
     train_env: BacktestEnv,
     test_env: BacktestEnv,
@@ -257,7 +252,6 @@ def train(
 
     actor_opt = keras.optimizers.Adam(3e-4)
     critic_opt = keras.optimizers.Adam(1e-3)
-
     os.makedirs(save_path, exist_ok=True)
     writer = tf.summary.create_file_writer(os.path.join(save_path, "logs"))
 

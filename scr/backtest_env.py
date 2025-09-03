@@ -413,11 +413,16 @@ class BacktestEnv:
     def _get_state(self) -> np.ndarray:
         state = np.array(
             [
-                float(self.position),
-                float(self.unrealized_pnl),
-                float(self.flat_steps) / 1000.0,
-                float(self.hold_steps) / 1000.0,
-                float(self.drawdown),
+                float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
+                float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
+                float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
+                float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
+                float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
+                #float(self.position),
+                # float(self.unrealized_pnl),
+                # float(self.flat_steps) / 1000.0,
+                # float(self.hold_steps) / 1000.0,
+                # float(self.drawdown),
             ],
             dtype=np.float32,
         )
@@ -661,7 +666,7 @@ def run_backtest_with_logits(
         if feature_stats is not None:
             window = feature_stats.transform(window)
         state_window = np.stack(state_hist[t - seq_len + 1 : t + 1])
-        inputs = np.concatenate([window, state_window], axis=1)
+        inputs = np.concatenate([window, state_window], axis=1) #state_window
         logits = predict(inputs[None, :, :])
         env.step(np.asarray(logits).reshape(-1))
         state_hist.append(env._get_state())
