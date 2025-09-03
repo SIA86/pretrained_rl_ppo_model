@@ -1,8 +1,8 @@
-"""Metric helpers for masked action spaces.
+"""Вспомогательные метрики для маскированного пространства действий.
 
-This module provides TensorFlow implementations of several metrics used for
-training and evaluating policies with action masks.  All metrics are aware of
-invalid actions and optional sample weights.
+Модуль содержит реализации метрик на TensorFlow, применяемых при обучении и
+оценке политик с масками действий. Все метрики учитывают недопустимые
+действия и опциональные весы выборок.
 """
 
 from __future__ import annotations
@@ -21,10 +21,10 @@ def expected_return_metric(
     action_weights: tf.Tensor,
     sample_w: Optional[tf.Tensor] = None,
 ) -> tf.Tensor:
-    """Compute expected return of actions under the policy.
+    """Посчитать ожидаемую доходность действий под текущей политикой.
 
-    The metric averages ``probs * action_weights`` over the batch, optionally
-    weighted by ``sample_w`` and ignoring samples without any valid actions.
+    Метрика усредняет ``probs * action_weights`` по батчу, опционально
+    взвешивая примеры ``sample_w`` и игнорируя строки без допустимых действий.
     """
 
     mask = tf.cast(mask, tf.float32)
@@ -51,10 +51,10 @@ def f1_per_class(
     mask: tf.Tensor,
     sample_w: Optional[tf.Tensor] = None,
 ) -> tuple[tf.Tensor, tf.Tensor]:
-    """Return mean and per-class F1 scores.
+    """Вернуть средний и по‑классовые F1‑оценки.
 
-    The function uses the mask to ignore invalid actions and supports sample
-    weights at the example level.
+    Функция применяет маску для игнорирования недопустимых действий и
+    поддерживает весовые коэффициенты на уровне примеров.
     """
 
     mask = tf.cast(mask, tf.float32)
@@ -86,7 +86,7 @@ def f1_per_class(
 
 @tf.function
 def pearson_corr(x: tf.Tensor, y: tf.Tensor, eps: float = 1e-8) -> tf.Tensor:
-    """Compute Pearson correlation coefficient."""
+    """Вычислить коэффициент корреляции Пирсона."""
 
     x = tf.cast(x, tf.float32)
     y = tf.cast(y, tf.float32)
@@ -99,7 +99,7 @@ def pearson_corr(x: tf.Tensor, y: tf.Tensor, eps: float = 1e-8) -> tf.Tensor:
 
 @tf.function
 def spearman_corr(x: tf.Tensor, y: tf.Tensor) -> tf.Tensor:
-    """Compute Spearman correlation coefficient via ranks."""
+    """Вычислить ранговую корреляцию Спирмена через ранги."""
 
     def _ranks(v: tf.Tensor) -> tf.Tensor:
         order = tf.argsort(v, axis=0, stable=True)
@@ -120,11 +120,11 @@ def information_coefficient(
     realized_return: tf.Tensor,
     sample_w: Optional[tf.Tensor] = None,
 ) -> tuple[tf.Tensor, tf.Tensor]:
-    """Return Pearson and Spearman information coefficients.
+    """Вернуть информационные коэффициенты Пирсона и Спирмена.
 
-    Correlates expected returns from the policy with realized returns. Samples
-    without any valid actions are ignored.  If fewer than two valid samples are
-    present, zero is returned for both coefficients.
+    Коррелирует ожидаемую доходность политики с реализованной. Строки без
+    валидных действий игнорируются. Если валидных примеров меньше двух,
+    оба коэффициента равны нулю.
     """
 
     mask = tf.cast(mask, tf.float32)

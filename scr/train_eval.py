@@ -1,9 +1,9 @@
-"""High level training and evaluation helpers.
+"""Высокоуровневые помощники для обучения и оценки.
 
-This module bundles together a small training loop, evaluation helpers and a
-few utilities for visualising the results.  The implementation is adapted from
-the user's specification and is deliberately light‑weight so it can be reused
-in notebooks or scripts.
+Модуль объединяет небольшой тренировочный цикл, функции оценки и пару
+утилит для визуализации результатов. Реализация адаптирована из
+пользовательской спецификации и преднамеренно легковесна для повторного
+использования в ноутбуках или скриптах.
 """
 
 from __future__ import annotations
@@ -24,12 +24,12 @@ from .residual_lstm import (
 
 
 # ---------------------------------------------------------------------------
-# Learning rate schedules
+# Планировщики скоростей обучения
 # ---------------------------------------------------------------------------
 
 
 class CosineWithWarmup:
-    """Cosine schedule with optional linear warmup."""
+    """Косинусный планировщик с опциональным линейным прогревом."""
 
     def __init__(
         self,
@@ -66,7 +66,7 @@ class CosineWithWarmup:
 
 
 class OneCycleLR:
-    """Simplified OneCycle learning rate schedule."""
+    """Упрощённый планировщик OneCycle."""
 
     def __init__(
         self,
@@ -104,18 +104,18 @@ class OneCycleLR:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Вспомогательные функции
 # ---------------------------------------------------------------------------
 
 
 def _unpack_batch(
     batch: Any,
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor | None, tf.Tensor | None, tf.Tensor | None]:
-    """Unpack batches produced by :func:`dataset_builder.build_tf_dataset`.
+    """Распаковать батчи из :func:`dataset_builder.build_tf_dataset`.
 
-    The dataset can provide ``(X, (Y, M))`` or with additional arrays
-    ``(X, (Y, M, W, R[, SW]))``.  The function returns
-    ``X, M, Y, W, R, SW`` where ``W``, ``R`` and ``SW`` may be ``None``.
+    Датасет может выдавать ``(X, (Y, M))`` либо с дополнительными массивами
+    ``(X, (Y, M, W, R[, SW]))``. Функция возвращает
+    ``X, M, Y, W, R, SW``, где ``W``, ``R`` и ``SW`` могут быть ``None``.
     """
 
     x, rest = batch
@@ -150,7 +150,7 @@ def expected_return_metric(
     W: tf.Tensor,
     sample_w: tf.Tensor | None = None,
 ) -> tf.Tensor:
-    """Expected return under the model's policy."""
+    """Ожидаемая доходность под текущей политикой модели."""
 
     probs = tf.nn.softmax(apply_action_mask(logits, mask), axis=-1)
     per_ex = tf.reduce_sum(probs * W * mask, axis=-1)
@@ -173,7 +173,7 @@ def f1_per_class(
     mask: tf.Tensor,
     sample_w: tf.Tensor | None = None,
 ) -> Tuple[tf.Tensor, tf.Tensor]:
-    """Compute macro F1 and per-class F1 scores."""
+    """Посчитать макро‑F1 и F1 по классам."""
 
     masked_logits = apply_action_mask(logits, mask)
     pred = tf.argmax(masked_logits, axis=-1, output_type=tf.int32)
@@ -203,7 +203,7 @@ def information_coefficient(
     R: tf.Tensor,
     sample_w: tf.Tensor | None = None,
 ) -> Tuple[tf.Tensor, tf.Tensor]:
-    """Return (Pearson, Spearman) IC between predicted and true returns."""
+    """Вернуть (Пирсон, Спирмен) IC между предсказанной и фактической доходностью."""
 
     probs = tf.nn.softmax(apply_action_mask(logits, mask), axis=-1)
     pred = tf.reduce_sum(probs * W * mask, axis=-1)
@@ -241,7 +241,7 @@ def information_coefficient(
 
 
 # ---------------------------------------------------------------------------
-# Training / validation loops
+# Циклы обучения и валидации
 # ---------------------------------------------------------------------------
 
 
@@ -387,7 +387,7 @@ def fit_model(
     lr_restart_shrink: float = 0.5,
     best_path: str = "best_lstm_weights.h5",
 ):
-    """Train ``model`` and return history dict."""
+    """Обучить ``model`` и вернуть историю в виде словаря."""
 
     try:
         import tensorflow_addons as tfa
@@ -512,7 +512,7 @@ def fit_model(
 
 
 # ---------------------------------------------------------------------------
-# Evaluation / visualisation utilities
+# Утилиты для оценки и визуализации
 # ---------------------------------------------------------------------------
 
 
@@ -718,7 +718,7 @@ def evaluate_dataset(model: keras.Model, ds: tf.data.Dataset):
 
 
 def materialize_metrics(d: dict) -> dict:
-    """Convert a dict of tensors/arrays to plain Python types."""
+    """Преобразовать словарь тензоров/массивов в обычные Python‑типы."""
 
     out: dict[str, Any] = {}
     for k, v in d.items():
@@ -742,7 +742,7 @@ def materialize_metrics(d: dict) -> dict:
 
 
 def predict_logits_dataset(model: keras.Model, ds: tf.data.Dataset) -> np.ndarray:
-    """Collect raw model logits over a dataset."""
+    """Собрать логиты модели по датасету."""
 
     logits_list = []
     for batch in ds:

@@ -19,27 +19,27 @@ def optimize_hyperparameters(
     n_trials: int = 10,
     epochs: int = 10,
 ) -> Dict[str, object]:
-    """Optimize network hyperparameters using Optuna.
+    """Оптимизировать гиперпараметры сети с помощью Optuna.
 
     Parameters
     ----------
     train_ds : tf.data.Dataset
-        Training dataset yielding batches as produced by dataset_builder.
+        Обучающий датасет, предоставляющий батчи формата dataset_builder.
     val_ds : tf.data.Dataset
-        Validation dataset in the same format as ``train_ds``.
+        Валидационный датасет в том же формате, что ``train_ds``.
     seq_len : int
-        Sequence length for the model input.
+        Длина входной последовательности.
     feature_dim : int
-        Number of features per timestep.
+        Число признаков на шаг.
     n_trials : int, optional
-        Number of Optuna trials to run, by default 10.
+        Количество проб Optuna, по умолчанию 10.
     epochs : int, optional
-        Number of epochs for each trial, by default 10.
+        Число эпох на каждую пробу, по умолчанию 10.
 
     Returns
     -------
     Dict[str, object]
-        Best hyperparameters: ``units_per_layer``, ``dropout`` and ``lr``.
+        Лучшие гиперпараметры: ``units_per_layer``, ``dropout`` и ``lr``.
     """
 
     def objective(trial: Trial) -> float:
