@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from typing import Literal, Optional, Iterable
 
 """
 1. Execution @ next_open: решения на баре t исполняются на Open[t+1]. Это обеспечивает корректную причинность и реалистичный бэктест.
@@ -11,18 +10,11 @@ from typing import Literal, Optional, Iterable
 4. Единая временная опора для сравнения: в позиции сравниваем из t+1:
 Close = 0 (после закрытия прирост дальше равен нулю),
 Hold = Ret(t+1 → TGT). Это устраняет «ранний выход на полпути» из-за некорректных горизонтов и даёт стабильные решения.
-5. Три режима разметки:
-  mode='exit' — continuation до teacher-exit. Хорош для имитации конкретной стратегии выдержки/выхода.
-  mode='horizon' — фиксированный горизонт H. Классика supervised в финансах; стационарная цель без лейбл-ликинга по exit.
-  mode='tdlambda' — смесь n-step горизонтов (TF-style, TD-λ). Снижает дисперсию меток и согласуется с тем, как PPO/A2C обрабатывают возвраты.
-6. MAE-штраф (опционально):
-  если нужно «не сидеть в глубокой просадке», вводим штраф по Maximum Adverse Excursion на интервале удержания. 
-  Он уменьшает Q_Hold (и/или Q_Open) в абсолютной шкале, не ломая сопоставимость.
-
-7. Нормализация/клип:
-  допускается только глобальный winsorize/клип/робаст-скейл по train (единый для всех действий), чтобы стабилизировать обучение и 
+5. Разметка TD-λ: смесь n-step горизонтов (TF-style, TD-λ). Снижает дисперсию меток и согласуется с тем, как PPO/A2C обрабатывают возвраты.
+6. Нормализация/клип:
+  допускается только глобальный winsorize/клип/робаст-скейл по train (единый для всех действий), чтобы стабилизировать обучение и
   подобрать разумную температуру τ для softmax. Не применять построчные/волатильностные нормировки.
-8. Таргеты для SL → PPO:
+7. Таргеты для SL → PPO:
   строим Y = softmax(Q/τ) с масками валидности (advantage-нормировка нежелательна на этапе SL, т.к. теряет глобальный контекст; 
   он нужен для калибровки PPO). Value-head для PPO можно инициализировать как Vτ(s) = τ * log Σ_a exp(Q_a/τ) (мягкий максимум) 
   или max_a Q_a.
@@ -177,44 +169,23 @@ def calc_position_metrics(
 
 
 # ------------------------------------------------------------
-# Основная разметка Q с mode ∈ {'exit','horizon','tdlambda'}
+# Основная разметка Q по TD-λ смеси n-step горизонтов
 # ------------------------------------------------------------
 
 
 def enrich_q_labels_trend_one_side(
     df: pd.DataFrame,
-    mode: Literal["exit", "horizon", "tdlambda"] = "exit",
     side_long: bool = True,
-    # для 'horizon'
-    horizon: int = 60,
-    # для 'tdlambda'
     H_max: int = 60,
     lam: float = 0.9,
-    # комиссии и проскальзывание (доли, например 0.0002 = 2 bps)
     fee: float = 0.0002,
     slippage: float = 0.0001,
-    # MAE-штраф (по желанию) — применяется ТОЛЬКО к Hold/Open (см. ниже)
-    use_mae_penalty: bool = False,
-    mae_lambda: float = 0.0,  # 0.0 = нет штрафа
-    mae_apply_to: Literal["hold", "open", "both", "none"] = "hold",
 ) -> pd.DataFrame:
     """
     Размечает абсолютные Q для one-side (long-only или short-only) и действий: Open / Close / Hold / Wait.
     Всегда предполагается исполнение решений на next open (t -> t+1).
 
-    mode='exit':
-        Open = Ret(t+1 -> exit_exec), c обеими ногами издержек
-        Close = 0
-        Hold = Ret(t+1 -> exit_exec)
-        Wait = 0
-
-    mode='horizon':
-        Open = Ret(t+1 -> t+H), с издержками входа и выхода
-        Close = 0
-        Hold = Ret(t+1 -> t+H)
-        Wait = 0
-
-    mode='tdlambda':
+    TD(λ):
         Open = Σ_{n=1..H_max} w_n * Ret(t+1 -> t+n), с издержками входа/выхода
         Close = 0
         Hold = Σ_{n=1..H_max} w_n * Ret(t+1 -> t+n)
@@ -284,281 +255,72 @@ def enrich_q_labels_trend_one_side(
     M_Hold = np.zeros(n, np.int8)
     M_Wait = np.zeros(n, np.int8)
 
-    # ------------------------------
-    # mode = 'exit' : продолжение до teacher-exit
-    # ------------------------------
-    if mode == "exit":
-        # ближайший future exit (exec@next open)
-        exit_idx, exit_px = next_exit_exec_arrays(
-            Open, buy_sig, sell_sig, side_long=side_long
-        )
-        has_exit = exit_idx >= (
-            np.arange(n) + 2
-        )  # нужен хотя бы один бар PnL: t+1 -> exit
+    # TD(λ): смесь n-step горизонтов (TF-style)
+    Hm = int(max(1, H_max))
+    # подготовим будущие Open для n=1..Hm
+    fut = np.full((n, Hm), np.nan, dtype=np.float64)
+    for j in range(1, Hm + 1):
+        idx = np.arange(n) + j
+        ok = idx < n
+        fut[ok, j - 1] = Open[idx[ok]]
 
-        # Open (flat): t+1 -> exit, с обеими ногами издержек
-        m_open = flat & has_next & has_exit
+    # веса TD(λ)
+    w = np.array(
+        [(1.0 - lam) * (lam ** (k - 1)) for k in range(1, Hm + 1)], dtype=np.float64
+    )
+    w = w / np.sum(w)
+
+    # Open (flat): смесь n-step
+    m_open = flat & has_next
+    if np.any(m_open):
         if side_long:
-            entry_eff_open = exec_next_open * (1.0 + c_open)
-            exit_eff_open = exit_px * (1.0 - c_close)
-            Q_Open[m_open] = exit_eff_open[m_open] / entry_eff_open[m_open] - 1.0
+            entry_eff = (exec_next_open[m_open] * (1.0 + c_open))[:, None]
+            exit_eff = fut[m_open, :] * (1.0 - c_close)
+            vals = exit_eff / entry_eff - 1.0
         else:
-            entry_eff_open = exec_next_open * (1.0 - c_open)  # sell
-            exit_eff_open = exit_px * (1.0 + c_close)  # buy
-            Q_Open[m_open] = entry_eff_open[m_open] / exit_eff_open[m_open] - 1.0
-        M_Open[m_open] = 1
+            entry_eff = (exec_next_open[m_open] * (1.0 - c_open))[:, None]  # sell
+            exit_eff = fut[m_open, :] * (1.0 + c_close)  # buy
+            vals = entry_eff / exit_eff - 1.0
+        mask_cols = np.isfinite(vals)
+        vals[~mask_cols] = np.nan
+        weights = np.broadcast_to(w, vals.shape).copy()
+        weights[~mask_cols] = 0.0
+        denom = weights.sum(axis=1, keepdims=True)
+        valid_rows = denom.squeeze(1) > 0.0
+        denom[denom == 0.0] = np.nan
+        q_vals = np.nansum(vals * weights, axis=1) / denom.squeeze(1)
+        idx_rows = np.where(m_open)[0]
+        Q_Open[idx_rows[valid_rows]] = q_vals[valid_rows]
+        M_Open[idx_rows[valid_rows]] = 1
 
-        # Close (inpos): в TD-конвенции — baseline "дальше 0"
-        m_close = inpos & has_next
-        Q_Close[m_close] = 0.0
-        M_Close[m_close] = 1
+    # Close: 0
+    m_close = inpos & has_next
+    Q_Close[m_close] = 0.0
+    M_Close[m_close] = 1
 
-        # Hold (inpos): t+1 -> exit (continuation)
-        m_hold = inpos & has_next & has_exit
+    # Hold (inpos): смесь n-step
+    m_hold = inpos & has_next
+    if np.any(m_hold):
         if side_long:
-            Q_Hold[m_hold] = (exit_px[m_hold] / exec_next_open[m_hold]) - 1.0
+            vals = (fut[m_hold, :] / exec_next_open[m_hold, None]) - 1.0
         else:
-            Q_Hold[m_hold] = (exec_next_open[m_hold] / exit_px[m_hold]) - 1.0
-        M_Hold[m_hold] = 1
+            vals = (exec_next_open[m_hold, None] / fut[m_hold, :]) - 1.0
+        mask_cols = np.isfinite(vals)
+        vals[~mask_cols] = np.nan
+        weights = np.broadcast_to(w, vals.shape).copy()
+        weights[~mask_cols] = 0.0
+        denom = weights.sum(axis=1, keepdims=True)
+        valid_rows = denom.squeeze(1) > 0.0
+        denom[denom == 0.0] = np.nan
+        q_vals = np.nansum(vals * weights, axis=1) / denom.squeeze(1)
+        idx_rows = np.where(m_hold)[0]
+        Q_Hold[idx_rows[valid_rows]] = q_vals[valid_rows]
+        M_Hold[idx_rows[valid_rows]] = 1
 
-        # Wait (flat): 0
-        m_wait = flat
-        Q_Wait[m_wait] = 0.0
-        M_Wait[m_wait] = 1
-
-        # опционально: MAE-штраф (уменьшает Q_Hold и/или Q_Open)
-        if use_mae_penalty and mae_lambda > 0.0:
-            # штраф считаем по пути t+1...exit-1 относительно ExecNow
-            def mae_fwd_long(t):
-                L, R = t + 1, exit_idx[t]
-                if R <= L or not np.isfinite(exec_next_open[t]):
-                    return 0.0
-                worst = np.nanmin(Low[L:R])
-                return min(worst / exec_next_open[t] - 1.0, 0.0)
-
-            def mae_fwd_short(t):
-                L, R = t + 1, exit_idx[t]
-                if R <= L or not np.isfinite(exec_next_open[t]):
-                    return 0.0
-                worst = np.nanmax(High[L:R])
-                return min(exec_next_open[t] / worst - 1.0, 0.0)
-
-            # HOLD
-            if mae_apply_to in ("hold", "both"):
-                idxs = np.where(M_Hold == 1)[0]
-                if side_long:
-                    penalties = np.array([mae_fwd_long(t) for t in idxs])
-                else:
-                    penalties = np.array([mae_fwd_short(t) for t in idxs])
-                Q_Hold[idxs] = Q_Hold[idxs] - mae_lambda * np.abs(penalties)
-
-            # OPEN
-            if mae_apply_to in ("open", "both"):
-                idxs = np.where(M_Open == 1)[0]
-                if side_long:
-                    penalties = np.array([mae_fwd_long(t) for t in idxs])
-                else:
-                    penalties = np.array([mae_fwd_short(t) for t in idxs])
-                Q_Open[idxs] = Q_Open[idxs] - mae_lambda * np.abs(penalties)
-
-    # ------------------------------
-    # mode = 'horizon' : фиксированный горизонт H
-    # ------------------------------
-    elif mode == "horizon":
-        H = int(max(1, horizon))
-        fut_idx = np.arange(n) + H
-        has_fut = fut_idx < n
-
-        fut_px = np.full(n, np.nan)
-        fut_px[has_fut] = Open[fut_idx[has_fut]]
-
-        # Open (flat): t+1 -> t+H, с обеими ногами издержек
-        m_open = flat & has_next & has_fut
-        if side_long:
-            entry_eff_open = exec_next_open * (1.0 + c_open)
-            exit_eff_open = fut_px * (1.0 - c_close)
-            Q_Open[m_open] = exit_eff_open[m_open] / entry_eff_open[m_open] - 1.0
-        else:
-            entry_eff_open = exec_next_open * (1.0 - c_open)
-            exit_eff_open = fut_px * (1.0 + c_close)
-            Q_Open[m_open] = entry_eff_open[m_open] / exit_eff_open[m_open] - 1.0
-        M_Open[m_open] = 1
-
-        # Close: 0
-        m_close = inpos & has_next
-        Q_Close[m_close] = 0.0
-        M_Close[m_close] = 1
-
-        # Hold: t+1 -> t+H
-        m_hold = inpos & has_next & has_fut
-        if side_long:
-            Q_Hold[m_hold] = (fut_px[m_hold] / exec_next_open[m_hold]) - 1.0
-        else:
-            Q_Hold[m_hold] = (exec_next_open[m_hold] / fut_px[m_hold]) - 1.0
-        M_Hold[m_hold] = 1
-
-        # Wait: 0
-        m_wait = flat
-        Q_Wait[m_wait] = 0.0
-        M_Wait[m_wait] = 1
-
-        # (опционально) MAE-штраф к Hold/Open — в горизонте считаем MAE на [t+1, t+H)
-        if use_mae_penalty and mae_lambda > 0.0:
-
-            def mae_h_long(t):
-                L, R = t + 1, t + H
-                if R <= L or not np.isfinite(exec_next_open[t]) or R > n:
-                    return 0.0
-                worst = np.nanmin(Low[L:R])
-                return min(worst / exec_next_open[t] - 1.0, 0.0)
-
-            def mae_h_short(t):
-                L, R = t + 1, t + H
-                if R <= L or not np.isfinite(exec_next_open[t]) or R > n:
-                    return 0.0
-                worst = np.nanmax(High[L:R])
-                return min(exec_next_open[t] / worst - 1.0, 0.0)
-
-            if mae_apply_to in ("hold", "both"):
-                idxs = np.where(M_Hold == 1)[0]
-                penalties = np.array(
-                    [mae_h_long(t) if side_long else mae_h_short(t) for t in idxs]
-                )
-                Q_Hold[idxs] = Q_Hold[idxs] - mae_lambda * np.abs(penalties)
-
-            if mae_apply_to in ("open", "both"):
-                idxs = np.where(M_Open == 1)[0]
-                penalties = np.array(
-                    [mae_h_long(t) if side_long else mae_h_short(t) for t in idxs]
-                )
-                Q_Open[idxs] = Q_Open[idxs] - mae_lambda * np.abs(penalties)
-
-    # ------------------------------
-    # mode = 'tdlambda' : смесь n-step горизонтов (TF-style)
-    # ------------------------------
-    elif mode == "tdlambda":
-        Hm = int(max(1, H_max))
-        # подготовим будущие Open для n=1..Hm
-        fut = np.full((n, Hm), np.nan, dtype=np.float64)
-        for j in range(1, Hm + 1):
-            idx = np.arange(n) + j
-            ok = idx < n
-            fut[ok, j - 1] = Open[idx[ok]]
-
-        # веса TD(λ)
-        w = np.array(
-            [(1.0 - lam) * (lam ** (k - 1)) for k in range(1, Hm + 1)], dtype=np.float64
-        )
-        w = w / np.sum(w)
-
-        # Open (flat): смесь n-step
-        m_open = flat & has_next
-        if np.any(m_open):
-            if side_long:
-                entry_eff = (exec_next_open[m_open] * (1.0 + c_open))[:, None]
-                exit_eff = fut[m_open, :] * (1.0 - c_close)
-                vals = exit_eff / entry_eff - 1.0
-            else:
-                entry_eff = (exec_next_open[m_open] * (1.0 - c_open))[:, None]  # sell
-                exit_eff = fut[m_open, :] * (1.0 + c_close)  # buy
-                vals = entry_eff / exit_eff - 1.0
-            # валидные столбцы: где fut не NaN
-            mask_cols = np.isfinite(vals)
-            vals[~mask_cols] = np.nan
-            # средневзвешенно по доступным n (нормировка по доступным весам)
-            weights = np.broadcast_to(w, vals.shape).copy()
-            weights[~mask_cols] = 0.0
-            denom = weights.sum(axis=1, keepdims=True)
-            valid_rows = denom.squeeze(1) > 0.0
-            denom[denom == 0.0] = np.nan  # чтобы итог был NaN, а не 0
-            q_vals = np.nansum(vals * weights, axis=1) / denom.squeeze(1)
-            # назначаем только туда, где есть хотя бы один валидный горизонт
-            idx_rows = np.where(m_open)[0]
-            Q_Open[idx_rows[valid_rows]] = q_vals[valid_rows]
-            M_Open[idx_rows[valid_rows]] = 1
-
-        # Close: 0
-        m_close = inpos & has_next
-        Q_Close[m_close] = 0.0
-        M_Close[m_close] = 1
-
-        # Hold (inpos): смесь n-step
-        m_hold = inpos & has_next
-        if np.any(m_hold):
-            if side_long:
-                vals = (fut[m_hold, :] / exec_next_open[m_hold, None]) - 1.0
-            else:
-                vals = (exec_next_open[m_hold, None] / fut[m_hold, :]) - 1.0
-            mask_cols = np.isfinite(vals)
-            vals[~mask_cols] = np.nan
-            weights = np.broadcast_to(w, vals.shape).copy()
-            weights[~mask_cols] = 0.0
-            denom = weights.sum(axis=1, keepdims=True)
-            valid_rows = denom.squeeze(1) > 0.0
-            denom[denom == 0.0] = np.nan
-            q_vals = np.nansum(vals * weights, axis=1) / denom.squeeze(1)
-            idx_rows = np.where(m_hold)[0]
-            Q_Hold[idx_rows[valid_rows]] = q_vals[valid_rows]
-            M_Hold[idx_rows[valid_rows]] = 1
-
-        # Wait: 0
-        m_wait = flat
-        Q_Wait[m_wait] = 0.0
-        M_Wait[m_wait] = 1
-
-        # опциональный MAE-штраф (на интервалах [t+1, t+n)), применим эквивалентно к средневзвешенной MAE
-        if use_mae_penalty and mae_lambda > 0.0:
-            # Предвычислим MAE для каждого n (дороже, но прозрачно)
-            N = n  # длина временного ряда
-
-            def mae_n_long(t, n_step):
-                L, R = t + 1, t + n_step  # R - правая граница (исключительная)
-                if R <= L or R > N or not np.isfinite(exec_next_open[t]):
-                    return 0.0
-                worst = np.nanmin(Low[L:R])
-                return min(worst / exec_next_open[t] - 1.0, 0.0)
-
-            def mae_n_short(t, n_step):
-                L, R = t + 1, t + n_step
-                if R <= L or R > N or not np.isfinite(exec_next_open[t]):
-                    return 0.0
-                worst = np.nanmax(High[L:R])
-                return min(exec_next_open[t] / worst - 1.0, 0.0)
-
-            # HOLD
-            if mae_apply_to in ("hold", "both"):
-                idxs = np.where(M_Hold == 1)[0]
-                penalties = []
-                for t in idxs:
-                    acc = 0.0
-                    zw = 0.0
-                    for j in range(1, Hm + 1):
-                        R = t + j
-                        if R < N:
-                            pen = mae_n_long(t, j) if side_long else mae_n_short(t, j)
-                            acc += w[j - 1] * np.abs(pen)
-                            zw += w[j - 1]
-                    penalties.append(acc / (zw + 1e-12))
-                Q_Hold[idxs] = Q_Hold[idxs] - mae_lambda * np.asarray(penalties)
-
-            # OPEN
-            if mae_apply_to in ("open", "both"):
-                idxs = np.where(M_Open == 1)[0]
-                penalties = []
-                for t in idxs:
-                    acc = 0.0
-                    zw = 0.0
-                    for j in range(1, Hm + 1):
-                        R = t + j
-                        if R < N:
-                            pen = mae_n_long(t, j) if side_long else mae_n_short(t, j)
-                            acc += w[j - 1] * np.abs(pen)
-                            zw += w[j - 1]
-                    penalties.append(acc / (zw + 1e-12))
-                Q_Open[idxs] = Q_Open[idxs] - mae_lambda * np.asarray(penalties)
-
-    else:
-        raise ValueError("mode ∈ {'exit','horizon','tdlambda'}")
+    # Wait: 0
+    m_wait = flat
+    Q_Wait[m_wait] = 0.0
+    M_Wait[m_wait] = 1
 
     # итоговые колонки
     out["Q_Open"] = Q_Open.astype(np.float32) / 2e-3
