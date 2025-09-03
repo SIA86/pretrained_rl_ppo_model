@@ -197,7 +197,7 @@ def test_class_balance_weights_excludes_unused_rows():
         sw_mode="ClassBalance",
     )
     splits = builder.fit_transform(df)
-    SWtr = splits["train"][6]
+    SWtr = splits["train"][5]
 
     expected_invfreq = np.array([2.5, 5.0, 5.0, 5.0], dtype=np.float32)
     expected_sw = np.array([1.25, 1.25, 0.625, 1.25, 0.625], dtype=np.float32)

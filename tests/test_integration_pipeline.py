@@ -33,7 +33,7 @@ def _make_df(n: int = 40) -> pd.DataFrame:
             "drawdown": np.zeros(n),
         }
     )
-    df = enrich_q_labels_trend_one_side(df, mode="horizon", horizon=3)
+    df = enrich_q_labels_trend_one_side(df, H_max=3)
     return df
 
 
