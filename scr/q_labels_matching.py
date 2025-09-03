@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
-
 from .backtest_env import BacktestEnv, EnvConfig
+
 
 """
 1. Execution @ next_open: решения на баре t исполняются на Open[t+1]. Это обеспечивает корректную причинность и реалистичный бэктест.
@@ -273,12 +273,10 @@ def enrich_q_labels_trend_one_side(
         idx = np.arange(n) + j
         ok = idx < n
         fut[ok, j - 1] = Open[idx[ok]]
-
     w = np.array(
         [(1.0 - lam) * (lam ** (k - 1)) for k in range(1, Hm + 1)], dtype=np.float64
     )
     w = w / np.sum(w)
-
     # Open: смесь n-step, если есть будущее
     m_open = has_next
     if np.any(m_open):
