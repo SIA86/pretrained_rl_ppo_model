@@ -176,8 +176,14 @@ def _simulate_positions_via_env(
     side_long: bool,
     fee: float,
     slippage: float,
+    q_threshold: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Прогоняет действия с максимальным Q через ``BacktestEnv``.
+    """Прогоняет действия через ``BacktestEnv``.
+
+    По умолчанию выбирается действие с максимальным допустимым Q.
+    Если задан ``q_threshold``, логиты преобразуются в вероятности
+    через softmax и при недостаточной вероятности лучшего действия
+    выбирается ``Wait`` (вне позиции) или ``Hold`` (в позиции).
 
     Возвращает кортеж массивов ``(pos, entry_price)`` длины ``len(df)``
     со состоянием позиции *перед* выполнением каждого шага.
@@ -203,9 +209,21 @@ def _simulate_positions_via_env(
         positions.append(env.position)
         entries.append(env.entry_price if env.position != 0 else np.nan)
         mask = env.action_mask().astype(bool)
-        logits = np.where(np.isfinite(row), row, -1e9)
+        raw_logits = np.where(np.isfinite(row), row, -np.inf)
+        valid_logits = np.where(mask, raw_logits, -np.inf)
+        if q_threshold is not None:
+            max_logit = np.max(valid_logits)
+            exp_logits = np.exp(valid_logits - max_logit)
+            probs = exp_logits / np.sum(exp_logits)
+            best_prob = float(probs.max())
+            if best_prob < q_threshold:
+                action = 3 if env.position == 0 else 2
+                _, _, done, _ = env.step(action)
+                if done:
+                    break
+                continue
         priority = np.array([2e-12, 3e-12, 4e-12, 1e-12])
-        logits = np.where(mask, logits + priority, -1e9)
+        logits = np.where(mask, raw_logits + priority, -1e9)
         action = int(np.argmax(logits))
         _, _, done, _ = env.step(action)
         if done:
