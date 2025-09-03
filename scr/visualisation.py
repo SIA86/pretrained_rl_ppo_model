@@ -260,10 +260,10 @@ def plot_enriched_actions_one_side(
         _candles(ax_actions, t, o, h, l, c, alpha=0.35)
         ax_actions.grid(alpha=0.25)
 
-        q_open = df[f"{prefix}Open"].to_numpy(float)
-        q_close = df[f"{prefix}Close"].to_numpy(float)
-        q_hold = df[f"{prefix}Hold"].to_numpy(float)
-        q_wait = df[f"{prefix}Wait"].to_numpy(float)
+        q_open = df[f"{prefix}Open"].to_numpy(float) * df['Mask_Open'].to_numpy(float)
+        q_close = df[f"{prefix}Close"].to_numpy(float) * df['Mask_Close'].to_numpy(float)
+        q_hold = df[f"{prefix}Hold"].to_numpy(float) * df['Mask_Hold'].to_numpy(float)
+        q_wait = df[f"{prefix}Wait"].to_numpy(float) * df['Mask_Wait'].to_numpy(float)
 
         qs = np.vstack(
             [
