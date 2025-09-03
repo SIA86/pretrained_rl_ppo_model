@@ -249,6 +249,7 @@ def enrich_q_labels_trend_one_side(
     scale_mode: str = "const",
     scale_const: float = 2e-3,
     vol_window: int = 20,
+    thr: float = 0.5
 ) -> pd.DataFrame:
     """TD-λ разметка абсолютных Q для действий Open/Close/Hold/Wait.
 
@@ -351,7 +352,7 @@ def enrich_q_labels_trend_one_side(
     out["Q_Wait"] = (Q_Wait / scale).astype(np.float32)
 
     # Симуляция позиции по максимальному Q
-    pos, entry_eff = _simulate_positions_via_env(out, side_long, fee, slippage)
+    pos, entry_eff = _simulate_positions_via_env(out, side_long, fee, slippage, q_threshold=thr)
 
     # Метрики текущей позиции
     unreal, flat_steps, hold_steps, drawdown = calc_position_metrics(
