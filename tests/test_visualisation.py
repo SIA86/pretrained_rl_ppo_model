@@ -4,6 +4,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # non-interactive backend for tests
 import pandas as pd
+import numpy as np
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -23,6 +24,10 @@ def test_indicators_panels_accepts_series(monkeypatch):
             "Q_Close": [0, 0, 0, 0],
             "Q_Hold": [0, 0, 0, 0],
             "Q_Wait": [0, 0, 0, 0],
+            "Mask_Open": [1, 1, 1, 1],
+            "Mask_Close": [1, 1, 1, 1],
+            "Mask_Hold": [1, 1, 1, 1],
+            "Mask_Wait": [1, 1, 1, 1],
             "ADX_14": [10, 20, 30, 40],
         }
     )
@@ -44,10 +49,14 @@ def test_plot_with_action_labels(monkeypatch):
             "A_Close": [0.2, 0.3, 0.4],
             "A_Hold": [0.2, 0.3, 0.3],
             "A_Wait": [0.1, 0.2, 0.2],
+            "Mask_Open": [1, 1, 1],
+            "Mask_Close": [1, 1, 1],
+            "Mask_Hold": [1, 1, 1],
+            "Mask_Wait": [1, 1, 1],
         }
     )
     plot_enriched_actions_one_side(df, start=0, end=len(df))
-    
+
 
 def test_plot_without_pos(monkeypatch):
     monkeypatch.setattr("matplotlib.pyplot.show", lambda: None)
@@ -61,9 +70,43 @@ def test_plot_without_pos(monkeypatch):
             "A_Close": [0.2, 0.3, 0.4],
             "A_Hold": [0.2, 0.3, 0.3],
             "A_Wait": [0.1, 0.2, 0.2],
+            "Mask_Open": [1, 1, 1],
+            "Mask_Close": [1, 1, 1],
+            "Mask_Hold": [1, 1, 1],
+            "Mask_Wait": [1, 1, 1],
         }
     )
-    plot_enriched_actions_one_side(
-        df, start=0, end=len(df), show_reference=False
+    plot_enriched_actions_one_side(df, start=0, end=len(df), show_reference=False)
+
+
+def test_masked_actions_are_not_plotted(monkeypatch):
+    monkeypatch.setattr("matplotlib.pyplot.show", lambda: None)
+    calls = []
+
+    def fake_scatter(self, x, y, *args, **kwargs):
+        calls.append((kwargs.get("label"), len(np.atleast_1d(x))))
+        return None
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "scatter", fake_scatter)
+
+    df = pd.DataFrame(
+        {
+            "Open": [1],
+            "High": [1],
+            "Low": [1],
+            "Close": [1],
+            "Q_Open": [-0.2],
+            "Q_Close": [-0.1],
+            "Q_Hold": [-0.3],
+            "Q_Wait": [-0.4],
+            "Mask_Open": [1],
+            "Mask_Close": [0],
+            "Mask_Hold": [1],
+            "Mask_Wait": [1],
+        }
     )
 
+    plot_enriched_actions_one_side(df, start=0, end=len(df), show_reference=False)
+
+    close_calls = [n for label, n in calls if label == "CLOSE"]
+    assert close_calls and close_calls[0] == 0

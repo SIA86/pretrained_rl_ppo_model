@@ -260,26 +260,29 @@ def plot_enriched_actions_one_side(
         _candles(ax_actions, t, o, h, l, c, alpha=0.35)
         ax_actions.grid(alpha=0.25)
 
-        q_open = df[f"{prefix}Open"].to_numpy(float) * df['Mask_Open'].to_numpy(float)
-        q_close = df[f"{prefix}Close"].to_numpy(float) * df['Mask_Close'].to_numpy(float)
-        q_hold = df[f"{prefix}Hold"].to_numpy(float) * df['Mask_Hold'].to_numpy(float)
-        q_wait = df[f"{prefix}Wait"].to_numpy(float) * df['Mask_Wait'].to_numpy(float)
+        q_open = df[f"{prefix}Open"].to_numpy(float)
+        q_close = df[f"{prefix}Close"].to_numpy(float)
+        q_hold = df[f"{prefix}Hold"].to_numpy(float)
+        q_wait = df[f"{prefix}Wait"].to_numpy(float)
 
-        qs = np.vstack(
-            [
-                np.where(np.isnan(q_open), -np.inf, q_open),
-                np.where(np.isnan(q_close), -np.inf, q_close),
-                np.where(np.isnan(q_hold), -np.inf, q_hold),
-                np.where(np.isnan(q_wait), -np.inf, q_wait),
-            ]
-        )
+        mask_open = df["Mask_Open"].to_numpy(bool)
+        mask_close = df["Mask_Close"].to_numpy(bool)
+        mask_hold = df["Mask_Hold"].to_numpy(bool)
+        mask_wait = df["Mask_Wait"].to_numpy(bool)
+
+        q_open = np.where(mask_open & np.isfinite(q_open), q_open, -np.inf)
+        q_close = np.where(mask_close & np.isfinite(q_close), q_close, -np.inf)
+        q_hold = np.where(mask_hold & np.isfinite(q_hold), q_hold, -np.inf)
+        q_wait = np.where(mask_wait & np.isfinite(q_wait), q_wait, -np.inf)
+
+        qs = np.vstack([q_open, q_close, q_hold, q_wait])
 
         best_idx = np.argmax(qs, axis=0)
         best_q = np.take_along_axis(qs, best_idx[None, :], axis=0).ravel()
         mask_thr = (
-            best_q >= q_threshold
+            (best_q >= q_threshold) & np.isfinite(best_q)
             if (q_threshold is not None)
-            else np.ones_like(best_q, dtype=bool)
+            else np.isfinite(best_q)
         )
 
         ix_open = np.where((best_idx == 0) & mask_thr)[0]
@@ -324,10 +327,12 @@ def plot_enriched_actions_one_side(
                 series_dict = {panel_name: data}
 
             labels = list(series_dict.keys())
-            is_bar = (
-                len(labels) == 1
-                and labels[0].lower() in {"bar", "hist", "volume", "vol"}
-            )
+            is_bar = len(labels) == 1 and labels[0].lower() in {
+                "bar",
+                "hist",
+                "volume",
+                "vol",
+            }
             if is_bar:
                 label, src = next(iter(series_dict.items()))
                 y = _resolve_series(df, src, N, label, align_mode="right")
