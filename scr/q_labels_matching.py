@@ -1,5 +1,7 @@
 import numpy as np
 import pandas as pd
+from .backtest_env import BacktestEnv, EnvConfig
+
 
 """
 1. Execution @ next_open: решения на баре t исполняются на Open[t+1]. Это обеспечивает корректную причинность и реалистичный бэктест.
@@ -169,6 +171,56 @@ def calc_position_metrics(
 
 
 # ------------------------------------------------------------
+# Симуляция позиции через BacktestEnv
+# ------------------------------------------------------------
+
+
+def _simulate_positions_via_env(
+    df: pd.DataFrame,
+    side_long: bool,
+    fee: float,
+    slippage: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Прогоняет действия с максимальным Q через ``BacktestEnv``.
+
+    Возвращает кортеж массивов ``(pos, entry_price)`` длины ``len(df)``
+    со состоянием позиции *перед* выполнением каждого шага.
+    """
+    cfg = EnvConfig(
+        mode=1 if side_long else -1,
+        fee=fee,
+        spread=slippage,
+        leverage=1.0,
+        max_steps=len(df) - 1,
+        reward_scale=1.0,
+        use_log_reward=False,
+        time_penalty=0.0,
+        hold_penalty=0.0,
+    )
+    env = BacktestEnv(df[["Open", "High", "Low", "Close"]], price_col="Open", cfg=cfg)
+    env.reset()
+
+    positions = []
+    entries = []
+    q_mat = df[["Q_Open", "Q_Close", "Q_Hold", "Q_Wait"]].to_numpy(np.float64)
+    for row in q_mat[:-1]:
+        positions.append(env.position)
+        entries.append(env.entry_price if env.position != 0 else np.nan)
+        mask = env.action_mask().astype(bool)
+        logits = np.where(np.isfinite(row), row, -1e9)
+        priority = np.array([2e-12, 3e-12, 4e-12, 1e-12])
+        logits = np.where(mask, logits + priority, -1e9)
+        action = int(np.argmax(logits))
+        _, _, done, _ = env.step(action)
+        if done:
+            break
+
+    positions.append(env.position)
+    entries.append(env.entry_price if env.position != 0 else np.nan)
+    return np.array(positions, dtype=np.int8), np.array(entries, dtype=np.float64)
+
+
+# ------------------------------------------------------------
 # Основная разметка Q по TD-λ смеси n-step горизонтов
 # ------------------------------------------------------------
 
@@ -181,24 +233,12 @@ def enrich_q_labels_trend_one_side(
     fee: float = 0.0002,
     slippage: float = 0.0001,
 ) -> pd.DataFrame:
+    """TD-λ разметка абсолютных Q для действий Open/Close/Hold/Wait.
+
+    Позиция и маски валидности определяются через симуляцию на
+    ``BacktestEnv`` с выбором действия максимального Q на каждом шаге.
     """
-    Размечает абсолютные Q для one-side (long-only или short-only) и действий: Open / Close / Hold / Wait.
-    Всегда предполагается исполнение решений на next open (t -> t+1).
-
-    TD(λ):
-        Open = Σ_{n=1..H_max} w_n * Ret(t+1 -> t+n), с издержками входа/выхода
-        Close = 0
-        Hold = Σ_{n=1..H_max} w_n * Ret(t+1 -> t+n)
-        Wait = 0
-        где w_n = (1-λ) λ^{n-1} / нормировка.
-
-    Все Q — АБСОЛЮТНЫЕ доходности (без деления на σ или √Δt).
-    Маски Mask_* показывают исполнимость действия в моменте.
-
-    Требуемые колонки df: 'Open','High','Low','Close','Signal_Rule'
-      Signal_Rule: +1 — buy-сигнал, -1 — sell-сигнал (для teacher)
-    """
-    need = {"Open", "High", "Low", "Close", "Signal_Rule"}
+    need = {"Open", "High", "Low", "Close"}
     miss = need - set(df.columns)
     if miss:
         raise ValueError(f"нет колонок: {sorted(miss)}")
@@ -210,26 +250,6 @@ def enrich_q_labels_trend_one_side(
     Close = out["Close"].to_numpy(np.float64)
     n = len(Open)
 
-    # сигналы учителя (ПРОВЕРЬ соответствие под твой пайплайн!)
-    buy_sig = out["Signal_Rule"].to_numpy() == 1
-    sell_sig = out["Signal_Rule"].to_numpy() == -1
-    buy_sig = buy_sig.astype(np.bool_)
-    sell_sig = sell_sig.astype(np.bool_)
-
-    # позиция учителя (для entry_eff/pos)
-    pos, entry_eff = simulate_position_one_side(
-        Open, buy_sig, sell_sig, side_long=side_long
-    )
-    out["Pos"] = pos 
-    # метрики текущей позиции
-    unreal, flat_steps, hold_steps, drawdown = calc_position_metrics(
-        pos, entry_eff, High, Low, Close, side_long=side_long
-    )
-    out["Unreal_PnL"] = unreal.astype(np.float32)
-    out["Flat_Steps"] = (flat_steps / 1000).astype(np.float32) 
-    out["Hold_Steps"] = (hold_steps / 1000).astype(np.float32) 
-    out["Drawdown"] = drawdown.astype(np.float32)
-
     # исполнение "сейчас" — next open
     exec_next_open = np.full(n, np.nan)
     exec_next_open[:-1] = Open[1:]
@@ -238,48 +258,35 @@ def enrich_q_labels_trend_one_side(
     c_open = fee + slippage
     c_close = fee + slippage
 
-    # маски состояний
-    pos_now = pos
-    flat = pos_now == 0
-    inpos = (pos_now != 0) & np.isfinite(entry_eff)
     has_next = np.arange(n) < n - 1
 
-    # контейнеры Q и масок
+    # контейнеры Q
     Q_Open = np.full(n, np.nan, np.float64)
     Q_Close = np.full(n, np.nan, np.float64)
     Q_Hold = np.full(n, np.nan, np.float64)
-    Q_Wait = np.full(n, np.nan, np.float64)
-
-    M_Open = np.zeros(n, np.int8)
-    M_Close = np.zeros(n, np.int8)
-    M_Hold = np.zeros(n, np.int8)
-    M_Wait = np.zeros(n, np.int8)
+    Q_Wait = np.zeros(n, np.float64)
 
     # TD(λ): смесь n-step горизонтов (TF-style)
     Hm = int(max(1, H_max))
-    # подготовим будущие Open для n=1..Hm
     fut = np.full((n, Hm), np.nan, dtype=np.float64)
     for j in range(1, Hm + 1):
         idx = np.arange(n) + j
         ok = idx < n
         fut[ok, j - 1] = Open[idx[ok]]
-
-    # веса TD(λ)
     w = np.array(
         [(1.0 - lam) * (lam ** (k - 1)) for k in range(1, Hm + 1)], dtype=np.float64
     )
     w = w / np.sum(w)
-
-    # Open (flat): смесь n-step
-    m_open = flat & has_next
+    # Open: смесь n-step, если есть будущее
+    m_open = has_next
     if np.any(m_open):
         if side_long:
             entry_eff = (exec_next_open[m_open] * (1.0 + c_open))[:, None]
             exit_eff = fut[m_open, :] * (1.0 - c_close)
             vals = exit_eff / entry_eff - 1.0
         else:
-            entry_eff = (exec_next_open[m_open] * (1.0 - c_open))[:, None]  # sell
-            exit_eff = fut[m_open, :] * (1.0 + c_close)  # buy
+            entry_eff = (exec_next_open[m_open] * (1.0 - c_open))[:, None]
+            exit_eff = fut[m_open, :] * (1.0 + c_close)
             vals = entry_eff / exit_eff - 1.0
         mask_cols = np.isfinite(vals)
         vals[~mask_cols] = np.nan
@@ -291,15 +298,12 @@ def enrich_q_labels_trend_one_side(
         q_vals = np.nansum(vals * weights, axis=1) / denom.squeeze(1)
         idx_rows = np.where(m_open)[0]
         Q_Open[idx_rows[valid_rows]] = q_vals[valid_rows]
-        M_Open[idx_rows[valid_rows]] = 1
 
-    # Close: 0
-    m_close = inpos & has_next
-    Q_Close[m_close] = 0.0
-    M_Close[m_close] = 1
+    # Close: 0, если есть следующий бар
+    Q_Close[has_next] = 0.0
 
-    # Hold (inpos): смесь n-step
-    m_hold = inpos & has_next
+    # Hold: смесь n-step, если есть будущее
+    m_hold = has_next
     if np.any(m_hold):
         if side_long:
             vals = (fut[m_hold, :] / exec_next_open[m_hold, None]) - 1.0
@@ -315,18 +319,37 @@ def enrich_q_labels_trend_one_side(
         q_vals = np.nansum(vals * weights, axis=1) / denom.squeeze(1)
         idx_rows = np.where(m_hold)[0]
         Q_Hold[idx_rows[valid_rows]] = q_vals[valid_rows]
-        M_Hold[idx_rows[valid_rows]] = 1
 
-    # Wait: 0
-    m_wait = flat
-    Q_Wait[m_wait] = 0.0
-    M_Wait[m_wait] = 1
-
-    # итоговые колонки
+    # Итоговые Q-колонки (масштабируем для стабильности)
     out["Q_Open"] = Q_Open.astype(np.float32) / 2e-3
     out["Q_Close"] = Q_Close.astype(np.float32) / 2e-3
     out["Q_Hold"] = Q_Hold.astype(np.float32) / 2e-3
     out["Q_Wait"] = Q_Wait.astype(np.float32) / 2e-3
+
+    # Симуляция позиции по максимальному Q
+    pos, entry_eff = _simulate_positions_via_env(out, side_long, fee, slippage)
+
+    # Метрики текущей позиции
+    unreal, flat_steps, hold_steps, drawdown = calc_position_metrics(
+        pos, entry_eff, High, Low, Close, side_long=side_long
+    )
+    out["Pos"] = pos
+    out["Unreal_PnL"] = unreal.astype(np.float32)
+    out["Flat_Steps"] = (flat_steps / 1000).astype(np.float32)
+    out["Hold_Steps"] = (hold_steps / 1000).astype(np.float32)
+    out["Drawdown"] = drawdown.astype(np.float32)
+
+    # Маски валидности на основе симулированной позиции
+    flat = pos == 0
+    inpos = pos != 0
+    valid_open = np.isfinite(Q_Open)
+    valid_hold = np.isfinite(Q_Hold)
+    valid_close = np.isfinite(Q_Close)
+
+    M_Open = (flat & has_next & valid_open).astype(np.int8)
+    M_Close = (inpos & has_next & valid_close).astype(np.int8)
+    M_Hold = (inpos & has_next & valid_hold).astype(np.int8)
+    M_Wait = flat.astype(np.int8)
 
     out["Mask_Open"] = M_Open
     out["Mask_Close"] = M_Close
