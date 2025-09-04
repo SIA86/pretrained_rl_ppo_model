@@ -182,6 +182,14 @@ def test_vector_action_with_mask_argmax():
     assert info["position"] in (0, 1)
 
 
+def test_step_q_threshold_wait():
+    env = make_env([1, 2, 3])
+    env.reset()
+    logits = [0.0, 0.0, 0.0, 0.0]
+    env.step(logits, q_threshold=0.6)
+    assert env.position == 0
+
+
 def test_run_backtest_with_logits_executes_trade():
     df = make_df(4, start=1.0, step=1.0)
     stats = NormalizationStats().fit(df[["feat"]].to_numpy(np.float32))
@@ -205,6 +213,26 @@ def test_run_backtest_with_logits_executes_trade():
     )
     log = env.logs()
     assert log.iloc[-1]["equity"] == pytest.approx((4 - 3) / 3)
+
+
+def test_run_backtest_with_logits_respects_threshold():
+    df = make_df(4, start=1.0, step=1.0)
+    stats = NormalizationStats().fit(df[["feat"]].to_numpy(np.float32))
+
+    class DummyModel:
+        def __call__(self, inputs, training=False):
+            return np.array([[0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+
+    env = run_backtest_with_logits(
+        df,
+        DummyModel(),
+        stats,
+        seq_len=2,
+        feature_cols=["feat"],
+        q_threshold=0.6,
+    )
+    log = env.logs()
+    assert not log["opened"].any()
 
 
 def test_observation_state_updates():
@@ -232,14 +260,7 @@ def test_observation_state_updates():
         ),
     )
     obs = env.reset()
-    np.testing.assert_allclose(
-        obs["state"], np.array([0.0, 0.0, 0.001, 0.0, 0.0], dtype=np.float32)
-    )
+    np.testing.assert_allclose(obs["state"], np.zeros(5, dtype=np.float32))
     env.step(0)  # open
     obs, _, _, _ = env.step(2)  # hold
-    state = obs["state"]
-    assert state[0] == 1
-    assert state[3] == pytest.approx(0.002)
-    assert state[2] == pytest.approx(0.0)
-    assert state[4] == pytest.approx(0.0)
-    assert state[1] == pytest.approx((3.0 - 2.0) / 2.0)
+    np.testing.assert_allclose(obs["state"], np.zeros(5, dtype=np.float32))
