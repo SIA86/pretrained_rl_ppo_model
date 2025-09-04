@@ -281,7 +281,7 @@ class BacktestEnv:
             return np.array([1, 0, 0, 1], dtype=np.int8)
         return np.array([0, 1, 1, 0], dtype=np.int8)
 
-    def step(self, action) -> tuple:
+    def step(self, action, q_threshold: float | None = None) -> tuple:
         # Запрещаем шаги после завершения эпизода
         if getattr(self, "done", False):
             # Возвращаем текущее наблюдение и нулевую награду
@@ -298,16 +298,31 @@ class BacktestEnv:
             }
             return obs, 0.0, True, info
 
-        mask = self.action_mask()
+        mask = self.action_mask().astype(bool)
         # Поддержка как целочисленного действия, так и вектора логитов/оценок длиной 4
         if isinstance(action, (list, tuple, np.ndarray)):
             a = np.asarray(action, dtype=np.float64).reshape(-1)
             if a.size == 4:
-                masked = np.where(mask.astype(bool), a, -np.inf)
-                if np.all(~np.isfinite(masked)):
-                    action = 3 if self.position == 0 else 2
+                raw_logits = np.where(np.isfinite(a), a, -np.inf)
+                valid_logits = np.where(mask, raw_logits, -np.inf)
+                if q_threshold is not None:
+                    max_logit = np.max(valid_logits)
+                    exp_logits = np.exp(valid_logits - max_logit)
+                    probs = exp_logits / np.sum(exp_logits)
+                    best_prob = float(np.max(probs))
+                    if best_prob < q_threshold:
+                        action = 3 if self.position == 0 else 2
+                    else:
+                        priority = np.array([2e-12, 3e-12, 4e-12, 1e-12])
+                        logits = np.where(mask, raw_logits + priority, -1e9)
+                        action = int(np.argmax(logits))
                 else:
-                    action = int(np.nanargmax(masked))
+                    priority = np.array([2e-12, 3e-12, 4e-12, 1e-12])
+                    logits = np.where(mask, raw_logits + priority, -1e9)
+                    if np.all(~np.isfinite(valid_logits)):
+                        action = 3 if self.position == 0 else 2
+                    else:
+                        action = int(np.nanargmax(logits))
             else:
                 action = 3 if self.position == 0 else 2
         # Валидация для скалярного действия
@@ -588,6 +603,7 @@ def run_backtest_with_logits(
     cfg: EnvConfig = DEFAULT_CONFIG,
     state_stats: Optional[NormalizationStats] = None,
     show_progress: bool = True,
+    q_threshold: float | None = None,
 ) -> BacktestEnv:
     """Run backtest by querying ``model`` on every step.
 
@@ -617,6 +633,10 @@ def run_backtest_with_logits(
         Статистика нормализации состояния аккаунта, передаваемая в среду.
     show_progress:
         Показывать ли индикатор прогресса бэктеста.
+    q_threshold:
+        Если задан, логиты преобразуются в вероятности, и при
+        недостаточной уверенности в лучшем действии выбирается
+        ``Wait`` или ``Hold``.
     """
 
     if seq_len <= 0:
@@ -668,7 +688,7 @@ def run_backtest_with_logits(
         state_window = np.stack(state_hist[t - seq_len + 1 : t + 1])
         inputs = np.concatenate([window, state_window], axis=1) #state_window
         logits = predict(inputs[None, :, :])
-        env.step(np.asarray(logits).reshape(-1))
+        env.step(np.asarray(logits).reshape(-1), q_threshold=q_threshold)
         state_hist.append(env._get_state())
 
     return env
