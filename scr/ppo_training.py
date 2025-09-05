@@ -17,21 +17,36 @@ import tensorflow as tf
 from tensorflow import keras
 
 from .backtest_env import BacktestEnv
-from .residual_lstm import apply_action_mask, build_stacked_residual_lstm
+from .residual_lstm import (
+    apply_action_mask,
+    build_stacked_residual_lstm,
+    masked_logits_and_probs,
+)
 
 NUM_ACTIONS = 4
 UNITS_PER_LAYER = [64, 32]
 DROPOUT = 0.5
 
+
 def build_actor_critic(
-    seq_len: int, 
-    feature_dim: int, 
-    num_actions: int = NUM_ACTIONS
+    seq_len: int, feature_dim: int, num_actions: int = NUM_ACTIONS
 ) -> Tuple[keras.Model, keras.Model]:
     """Создать сети актёра и критика с общей архитектурой."""
 
-    actor = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=num_actions, units_per_layer=UNITS_PER_LAYER, dropout=DROPOUT )
-    critic = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=1, units_per_layer=UNITS_PER_LAYER, dropout=DROPOUT)
+    actor = build_stacked_residual_lstm(
+        seq_len,
+        feature_dim,
+        num_classes=num_actions,
+        units_per_layer=UNITS_PER_LAYER,
+        dropout=DROPOUT,
+    )
+    critic = build_stacked_residual_lstm(
+        seq_len,
+        feature_dim,
+        num_classes=1,
+        units_per_layer=UNITS_PER_LAYER,
+        dropout=DROPOUT,
+    )
     return actor, critic
 
 
@@ -79,8 +94,12 @@ def collect_trajectories(
         feat = np.concatenate([window, state_window], axis=1)
         mask = env.action_mask()
         logits = actor(feat[None, ...], training=False)
-        masked = apply_action_mask(logits, mask[None, :])
-        probs = tf.nn.softmax(masked, axis=-1).numpy()[0]
+        _, probs_tf = masked_logits_and_probs(logits, mask[None, :])
+        probs = probs_tf.numpy()[0]
+        if not np.isfinite(probs).all() or probs.sum() <= 0.0:
+            valid_actions = np.flatnonzero(mask)
+            probs = np.zeros(NUM_ACTIONS, dtype=np.float32)
+            probs[valid_actions] = 1.0 / len(valid_actions)
         action = int(np.random.choice(NUM_ACTIONS, p=probs))
         logp = float(np.log(probs[action] + 1e-8))
         value = float(critic(feat[None, ...], training=False).numpy()[0, 0])
@@ -165,9 +184,7 @@ def ppo_update(
     for _ in range(epochs):
         for batch in dataset:
             b_obs, b_act, b_adv, b_ret, b_old, b_mask = batch
-            b_adv = (b_adv - tf.reduce_mean(b_adv)) / (
-                tf.math.reduce_std(b_adv) + 1e-8
-            )
+            b_adv = (b_adv - tf.reduce_mean(b_adv)) / (tf.math.reduce_std(b_adv) + 1e-8)
 
             with tf.GradientTape(persistent=True) as tape:
                 logits = actor(b_obs, training=True)
@@ -257,6 +274,7 @@ def evaluate_profit(
             break
     return float(env.equity)
 
+
 def train(
     train_env: BacktestEnv,
     test_env: BacktestEnv,
@@ -273,7 +291,13 @@ def train(
     """Основной цикл обучения PPO."""
 
     actor, critic = build_actor_critic(seq_len, feature_dim)
-    teacher = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=NUM_ACTIONS, units_per_layer=UNITS_PER_LAYER, dropout=DROPOUT)
+    teacher = build_stacked_residual_lstm(
+        seq_len,
+        feature_dim,
+        num_classes=NUM_ACTIONS,
+        units_per_layer=UNITS_PER_LAYER,
+        dropout=DROPOUT,
+    )
     actor.load_weights(actor_weights)
     teacher.load_weights(actor_weights)
     teacher.trainable = False
@@ -292,7 +316,12 @@ def train(
 
     while steps < total_steps and wait < early_stop_patience:
         traj = collect_trajectories(
-            train_env, actor, critic, batch_size=batch_size, seq_len=seq_len, feature_dim=feature_dim
+            train_env,
+            actor,
+            critic,
+            batch_size=batch_size,
+            seq_len=seq_len,
+            feature_dim=feature_dim,
         )
         kl_coef, metrics = ppo_update(
             actor,
@@ -343,4 +372,3 @@ __all__ = [
     "ppo_update",
     "train",
 ]
-
