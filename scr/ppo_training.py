@@ -64,9 +64,19 @@ def collect_trajectories(
     logp_buf: List[float] = []
     mask_buf: List[np.ndarray] = []
 
-    obs_dict = env.reset()
+    obs = env.reset()
+    state_hist = [obs["state"]]
+    for _ in range(seq_len - 1):
+        obs, _, done, _ = env.step(3)
+        state_hist.append(obs["state"])
+        if done:
+            break
+
     for _ in range(batch_size):
-        feat = obs_dict["features"].reshape(seq_len, feature_dim)
+        t = env.t
+        window = env.features[t - seq_len + 1 : t + 1]
+        state_window = np.stack(state_hist[t - seq_len + 1 : t + 1])
+        feat = np.concatenate([window, state_window], axis=1)
         mask = env.action_mask()
         logits = actor(feat[None, ...], training=False)
         masked = apply_action_mask(logits, mask[None, :])
@@ -83,17 +93,20 @@ def collect_trajectories(
         logp_buf.append(logp)
         mask_buf.append(mask.astype(np.float32))
 
-        obs_dict = next_obs
+        state_hist.append(next_obs["state"])
+        obs = next_obs
         if done:
             break
 
     # bootstrap value
-    last_val = (
-        critic(obs_dict["features"].reshape(seq_len, feature_dim)[None, ...], training=False)
-        .numpy()[0, 0]
-        if not getattr(env, "done", False)
-        else 0.0
-    )
+    if not getattr(env, "done", False):
+        t = env.t
+        window = env.features[t - seq_len + 1 : t + 1]
+        state_window = np.stack(state_hist[t - seq_len + 1 : t + 1])
+        last_feat = np.concatenate([window, state_window], axis=1)
+        last_val = critic(last_feat[None, ...], training=False).numpy()[0, 0]
+    else:
+        last_val = 0.0
     vals = np.append(val_buf, last_val)
 
     # Generalised Advantage Estimation
@@ -223,13 +236,23 @@ def evaluate_profit(
     """Запустить политику в среде и вернуть итоговый капитал."""
 
     obs = env.reset()
+    state_hist = [obs["state"]]
+    for _ in range(seq_len - 1):
+        obs, _, done, _ = env.step(3)
+        state_hist.append(obs["state"])
+        if done:
+            break
     while True:
-        feat = obs["features"].reshape(seq_len, feature_dim)
+        t = env.t
+        window = env.features[t - seq_len + 1 : t + 1]
+        state_window = np.stack(state_hist[t - seq_len + 1 : t + 1])
+        feat = np.concatenate([window, state_window], axis=1)
         mask = env.action_mask()
         logits = actor(feat[None, ...], training=False)
         masked = apply_action_mask(logits, mask[None, :])
         action = int(tf.argmax(masked, axis=-1)[0])
         obs, _, done, _ = env.step(action)
+        state_hist.append(obs["state"])
         if done:
             break
     return float(env.equity)

@@ -28,9 +28,11 @@ def make_env():
 
 def test_build_and_collect():
     env = make_env()
-    actor, critic = build_actor_critic(seq_len=1, feature_dim=1)
-    traj = collect_trajectories(env, actor, critic, batch_size=1, seq_len=1, feature_dim=1)
-    assert traj.obs.shape == (1, 1, 1)
+    env.reset()
+    feature_dim = env.features.shape[1] + env._get_state().shape[0]
+    actor, critic = build_actor_critic(seq_len=1, feature_dim=feature_dim)
+    traj = collect_trajectories(env, actor, critic, batch_size=1, seq_len=1, feature_dim=feature_dim)
+    assert traj.obs.shape == (1, 1, feature_dim)
     assert traj.actions.shape == (1,)
     assert traj.returns.shape == (1,)
     assert traj.advantages.shape == (1,)
@@ -38,9 +40,11 @@ def test_build_and_collect():
 
 def test_ppo_update_kl_decay():
     env = make_env()
-    actor, critic = build_actor_critic(seq_len=1, feature_dim=1)
-    teacher = build_stacked_residual_lstm(1, 1, num_classes=4)
-    traj = collect_trajectories(env, actor, critic, batch_size=1, seq_len=1, feature_dim=1)
+    env.reset()
+    feature_dim = env.features.shape[1] + env._get_state().shape[0]
+    actor, critic = build_actor_critic(seq_len=1, feature_dim=feature_dim)
+    teacher = build_stacked_residual_lstm(1, feature_dim, num_classes=4)
+    traj = collect_trajectories(env, actor, critic, batch_size=1, seq_len=1, feature_dim=feature_dim)
     opt_a = keras.optimizers.Adam(1e-3)
     opt_c = keras.optimizers.Adam(1e-3)
     new_coef, metrics = ppo_update(
