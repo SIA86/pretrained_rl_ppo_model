@@ -471,8 +471,8 @@ class DatasetBuilderForYourColumns:
         te = cut(Xall, Y, M, W, R, s2, s3)
         if self.betta > 0.0:
             tr = _downsample_hold_wait(*tr, betta=self.betta)
-            va = _downsample_hold_wait(*va, betta=self.betta)
-            te = _downsample_hold_wait(*te, betta=self.betta)
+            # va = _downsample_hold_wait(*va, betta=self.betta)
+            # te = _downsample_hold_wait(*te, betta=self.betta)
 
         if return_indices:
             (Xtr, Ytr, Mtr, Wtr, Rtr, SWtr, Itr) = tr

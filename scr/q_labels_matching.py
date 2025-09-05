@@ -416,6 +416,8 @@ def soft_signal_labels_gaussian(
 
     buy_sig = sig == 1
     sell_sig = sig == -1
+    n = len(Open)
+    has_next = np.arange(n) < n - 1
 
     pos, entry_px = simulate_position_one_side(
         Open, buy_sig, sell_sig, side_long=side_long
@@ -516,6 +518,21 @@ def soft_signal_labels_gaussian(
     a_close[mask] /= total[mask]
     a_hold[mask] /= total[mask]
     a_wait[mask] /= total[mask]
+
+    M_Open = (flat & has_next).astype(np.int8)
+    M_Close = (inpos & has_next).astype(np.int8)
+    M_Hold = (inpos & has_next).astype(np.int8)
+    M_Wait = flat.astype(np.int8)
+
+    out["Mask_Open"] = M_Open
+    out["Mask_Close"] = M_Close
+    out["Mask_Hold"] = M_Hold
+    out["Mask_Wait"] = M_Wait
+
+    out["Mask_Open"] = M_Open
+    out["Mask_Close"] = M_Close
+    out["Mask_Hold"] = M_Hold
+    out["Mask_Wait"] = M_Wait
 
     out["Pos"] = pos.astype(np.int8)
     out["A_Open"] = a_open.astype(np.float32)
