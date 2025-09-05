@@ -23,12 +23,24 @@ NUM_ACTIONS = 4
 
 
 def build_actor_critic(
-    seq_len: int, feature_dim: int, num_actions: int = NUM_ACTIONS
+    seq_len: int,
+    feature_dim: int,
+    num_actions: int = NUM_ACTIONS,
+    actor_weights: Optional[str] = None,
 ) -> Tuple[keras.Model, keras.Model]:
-    """Создать сети актёра и критика с общей архитектурой."""
+    """Создать сети актёра и критика с общей архитектурой.
+
+    Если передан ``actor_weights``, веса актёра загружаются после явной
+    инициализации сети.
+    """
 
     actor = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=num_actions)
     critic = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=1)
+
+    if actor_weights:
+        actor.build((None, seq_len, feature_dim))
+        actor.load_weights(actor_weights)
+
     return actor, critic
 
 

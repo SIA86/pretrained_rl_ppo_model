@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import tensorflow as tf
 from tensorflow import keras
 
 from scr.backtest_env import BacktestEnv, EnvConfig
@@ -34,6 +35,18 @@ def test_build_and_collect():
     assert traj.actions.shape == (1,)
     assert traj.returns.shape == (1,)
     assert traj.advantages.shape == (1,)
+
+
+def test_build_actor_critic_loads_weights(tmp_path):
+    model = build_stacked_residual_lstm(1, 1, num_classes=4)
+    for w in model.trainable_weights:
+        w.assign(tf.ones_like(w))
+    weight_path = tmp_path / "actor.weights.h5"
+    model.save_weights(weight_path)
+
+    actor, _ = build_actor_critic(seq_len=1, feature_dim=1, actor_weights=str(weight_path))
+    for w in actor.trainable_weights:
+        assert np.allclose(w.numpy(), np.ones_like(w.numpy()))
 
 
 def test_ppo_update_kl_decay():
