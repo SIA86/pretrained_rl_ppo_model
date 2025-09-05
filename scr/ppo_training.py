@@ -20,15 +20,18 @@ from .backtest_env import BacktestEnv
 from .residual_lstm import apply_action_mask, build_stacked_residual_lstm
 
 NUM_ACTIONS = 4
-
+UNITS_PER_LAYER = [64, 32]
+DROPOUT = 0.5
 
 def build_actor_critic(
-    seq_len: int, feature_dim: int, num_actions: int = NUM_ACTIONS
+    seq_len: int, 
+    feature_dim: int, 
+    num_actions: int = NUM_ACTIONS
 ) -> Tuple[keras.Model, keras.Model]:
     """Создать сети актёра и критика с общей архитектурой."""
 
-    actor = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=num_actions)
-    critic = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=1)
+    actor = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=num_actions, units_per_layer=UNITS_PER_LAYER, dropout=DROPOUT )
+    critic = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=1, units_per_layer=UNITS_PER_LAYER, dropout=DROPOUT)
     return actor, critic
 
 
@@ -237,6 +240,7 @@ def train(
     seq_len: int,
     feature_dim: int,
     actor_weights: str,
+    batch_size: int = 512,
     save_path: str = "ppo",
     total_steps: int = 1024,
     teacher_kl: float = 0.1,
@@ -246,7 +250,7 @@ def train(
     """Основной цикл обучения PPO."""
 
     actor, critic = build_actor_critic(seq_len, feature_dim)
-    teacher = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=NUM_ACTIONS)
+    teacher = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=NUM_ACTIONS, units_per_layer=UNITS_PER_LAYER, dropout=DROPOUT)
     actor.load_weights(actor_weights)
     teacher.load_weights(actor_weights)
     teacher.trainable = False
@@ -265,7 +269,7 @@ def train(
 
     while steps < total_steps and wait < early_stop_patience:
         traj = collect_trajectories(
-            train_env, actor, critic, batch_size=256, seq_len=seq_len, feature_dim=feature_dim
+            train_env, actor, critic, batch_size=batch_size, seq_len=seq_len, feature_dim=feature_dim
         )
         kl_coef, metrics = ppo_update(
             actor,

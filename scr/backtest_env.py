@@ -199,6 +199,7 @@ class BacktestEnv:
         price_col: str = "close",
         cfg: EnvConfig = DEFAULT_CONFIG,
         state_stats: Optional[NormalizationStats] = None,
+        ppo_true: bool = True
     ):
         """Подготовка данных и настройка параметров среды.
 
@@ -216,7 +217,7 @@ class BacktestEnv:
         state_stats : NormalizationStats, optional
             Статистика для нормализации вектора состояния портфеля.
         """
-
+        self.ppo = ppo_true
         # Сбрасываем индекс, чтобы шаги шли от 0
         self.df = df.reset_index(drop=True)
         if feature_cols is None:
@@ -426,21 +427,28 @@ class BacktestEnv:
         return obs, reward, done, info
 
     def _get_state(self) -> np.ndarray:
-        state = np.array(
-            [
-                float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
-                float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
-                float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
-                float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
-                float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
-                #float(self.position),
-                # float(self.unrealized_pnl),
-                # float(self.flat_steps) / 1000.0,
-                # float(self.hold_steps) / 1000.0,
-                # float(self.drawdown),
-            ],
-            dtype=np.float32,
-        )
+        if not self.ppo:
+            state = np.array(
+                [
+                    float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
+                    float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
+                    float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
+                    float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
+                    float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
+                ],
+                dtype=np.float32,
+            )
+        else:
+            state = np.array(
+                [
+                    float(self.position),
+                    float(self.unrealized_pnl),
+                    float(self.flat_steps) / 1000.0,
+                    float(self.hold_steps) / 1000.0,
+                    float(self.drawdown),
+                ],
+                dtype=np.float32,
+            )
         if self.state_stats is not None:
             state = self.state_stats.transform(state[None, :])[0]
         return state
@@ -655,6 +663,7 @@ def run_backtest_with_logits(
         price_col=price_col,
         cfg=cfg,
         state_stats=state_stats,
+        ppo_true=False
     )
     env.reset()
     state_hist = [env._get_state()]
