@@ -37,11 +37,13 @@ def make_cfg():
 
 def test_build_and_collect():
     df = make_df()
-    train_df, _, _, feat_cols, state_stats = prepare_datasets(df)
+    train_df, _, _, feat_cols, _, state_stats = prepare_datasets(df)
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
-    actor, critic = build_actor_critic(seq_len, feature_dim)
+    actor, critic = build_actor_critic(
+        seq_len, feature_dim, num_actions=4, units_per_layer=[64, 32], dropout=0.5
+    )
     traj = collect_trajectories(
         train_df,
         actor,
@@ -52,6 +54,7 @@ def test_build_and_collect():
         n_env=2,
         rollout=2,
         seq_len=seq_len,
+        num_actions=4,
     )
     assert traj.obs.shape == (4, seq_len, feature_dim)
     assert traj.actions.shape == (4,)
@@ -61,11 +64,13 @@ def test_build_and_collect():
 
 def test_ppo_update_kl_decay():
     df = make_df()
-    train_df, _, _, feat_cols, state_stats = prepare_datasets(df)
+    train_df, _, _, feat_cols, _, state_stats = prepare_datasets(df)
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
-    actor, critic = build_actor_critic(seq_len, feature_dim)
+    actor, critic = build_actor_critic(
+        seq_len, feature_dim, num_actions=4, units_per_layer=[64, 32], dropout=0.5
+    )
     teacher_backbone = build_backbone(seq_len, feature_dim)
     teacher = build_head(teacher_backbone, 4)
     traj = collect_trajectories(
@@ -78,6 +83,7 @@ def test_ppo_update_kl_decay():
         n_env=1,
         rollout=2,
         seq_len=seq_len,
+        num_actions=4,
     )
     opt_a = keras.optimizers.Adam(1e-3)
     opt_c = keras.optimizers.Adam(1e-3)
@@ -87,11 +93,15 @@ def test_ppo_update_kl_decay():
         traj,
         opt_a,
         opt_c,
+        num_actions=4,
+        clip_ratio=0.2,
+        c1=0.5,
+        c2=0.01,
+        epochs=1,
+        batch_size=1,
         teacher=teacher,
         kl_coef=0.1,
         kl_decay=0.5,
-        epochs=1,
-        batch_size=1,
     )
     assert np.isclose(new_coef, 0.05)
     assert "teacher_kl" in metrics
@@ -107,12 +117,16 @@ def test_collect_trajectories_nan_probs():
             )
 
     df = make_df()
-    train_df, _, _, feat_cols, state_stats = prepare_datasets(df)
+    train_df, _, _, feat_cols, _, state_stats = prepare_datasets(df)
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
     critic = keras.Sequential(
-        [keras.layers.Input(shape=(seq_len, feature_dim)), keras.layers.Flatten(), keras.layers.Dense(1)]
+        [
+            keras.layers.Input(shape=(seq_len, feature_dim)),
+            keras.layers.Flatten(),
+            keras.layers.Dense(1),
+        ]
     )
     traj = collect_trajectories(
         train_df,
@@ -124,5 +138,6 @@ def test_collect_trajectories_nan_probs():
         n_env=1,
         rollout=1,
         seq_len=seq_len,
+        num_actions=4,
     )
     assert np.all(np.isfinite(traj.old_logp))
