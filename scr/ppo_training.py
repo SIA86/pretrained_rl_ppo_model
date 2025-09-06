@@ -39,15 +39,18 @@ def build_actor_critic(
 ) -> Tuple[keras.Model, keras.Model]:
     """Создать сети актёра и критика с общей архитектурой и опциональной загрузкой бэкбона."""
 
+    # Создаём две независимые копии бэкбона для актёра и критика
     actor_backbone = build_backbone(
         seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
     )
     critic_backbone = build_backbone(
         seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
     )
+    # При необходимости загружаем предобученные веса бэкбона
     if backbone_weights:
         actor_backbone.load_weights(backbone_weights)
         critic_backbone.load_weights(backbone_weights)
+    # На выход бэкбона навешиваются головы актёра и критика
     actor = build_head(actor_backbone, num_actions)
     critic = build_head(critic_backbone, 1)
     return actor, critic
@@ -91,14 +94,17 @@ def prepare_datasets(
     val_df = df.iloc[s1:s2].reset_index(drop=True).copy()
     test_df = df.iloc[s2:].reset_index(drop=True).copy()
 
+    # Считаем статистики нормализации по тренировочной части
     feat_stats = NormalizationStats(kind=norm_kind).fit(
         train_df[feature_cols].to_numpy(np.float32)
     )
+    # Применяем нормализацию к каждому из подмножеств
     for part in (train_df, val_df, test_df):
         part[feature_cols] = feat_stats.transform(
             part[feature_cols].to_numpy(np.float32)
         )
 
+    # Используем временную среду для оценки статистик состояния
     cfg = DEFAULT_CONFIG._replace(max_steps=len(train_df) - 1)
     tmp_env = BacktestEnv(train_df, feature_cols=feature_cols, cfg=cfg)
     states: List[np.ndarray] = []
@@ -218,6 +224,7 @@ def collect_trajectories(
             mask_buf[i].append(mask.astype(np.float32))
             done_buf[i].append(done)
 
+    # Объединяем накопленные буферы в единые массивы батча
     obs_arr: List[np.ndarray] = []
     act_arr: List[np.ndarray] = []
     adv_arr: List[np.ndarray] = []
@@ -283,6 +290,7 @@ def ppo_update(
     old_logp = tf.convert_to_tensor(traj.old_logp)
     masks = tf.convert_to_tensor(traj.masks)
 
+    # Создаём датасет TensorFlow и перемешиваем его для SGD
     dataset = tf.data.Dataset.from_tensor_slices((obs, acts, adv, ret, old_logp, masks))
     dataset = dataset.shuffle(len(traj.actions)).batch(batch_size)
     pi_losses: List[float] = []
@@ -292,18 +300,21 @@ def ppo_update(
     approx_kls: List[float] = []
     clipfracs: List[float] = []
 
+    # Запускаем несколько эпох обучения на собранном батче
     for _ in range(epochs):
         for batch in dataset:
             b_obs, b_act, b_adv, b_ret, b_old, b_mask = batch
             b_adv = (b_adv - tf.reduce_mean(b_adv)) / (tf.math.reduce_std(b_adv) + 1e-8)
 
             with tf.GradientTape(persistent=True) as tape:
+                # Прогоняем батч через актёра и критика
                 logits = actor(b_obs, training=True)
                 masked = apply_action_mask(logits, b_mask)
                 logp_all = tf.nn.log_softmax(masked, axis=-1)
                 logp_act = tf.reduce_sum(
                     tf.one_hot(b_act, num_actions) * logp_all, axis=-1
                 )
+                # Вычисляем отношение новых и старых вероятностей и применяем клиппинг
                 ratio = tf.exp(logp_act - b_old)
                 clipped = tf.clip_by_value(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio)
                 policy_loss = -tf.reduce_mean(
@@ -317,6 +328,7 @@ def ppo_update(
                 value = critic(b_obs, training=True)[:, 0]
                 value_loss = tf.reduce_mean(tf.square(b_ret - value))
                 t_kl = tf.constant(0.0)
+                # Добавляем регуляризацию по teacher-модели, если она задана
                 if teacher is not None and kl_coef > 0.0:
                     t_logits = teacher(b_obs, training=False)
                     t_masked = apply_action_mask(t_logits, b_mask)
@@ -330,6 +342,7 @@ def ppo_update(
 
                 critic_loss = c1 * value_loss
 
+            # Считаем градиенты и при необходимости клиппируем их
             a_grads = tape.gradient(actor_loss, actor.trainable_variables)
             c_grads = tape.gradient(critic_loss, critic.trainable_variables)
             if max_grad_norm is not None:
@@ -375,6 +388,7 @@ def evaluate_profit(
         state_hist.append(obs["state"])
         if done:
             break
+    # Прогоняем политику до завершения эпизода
     while True:
         t = env.t
         window = env.features[t - seq_len + 1 : t + 1]
@@ -425,10 +439,12 @@ def train(
 ) -> Tuple[keras.Model, keras.Model, List[Dict[str, float]], List[Dict[str, float]]]:
     """Основной цикл обучения PPO поверх табличных данных."""
 
+    # Подготавливаем данные и вычисляем статистики нормализации
     train_df, val_df, test_df, feature_cols, _feat_stats, state_stats = (
         prepare_datasets(df)
     )
     feature_dim = len(feature_cols) + 5
+    # Создаём модели актёра и критика
     actor, critic = build_actor_critic(
         seq_len,
         feature_dim,
@@ -448,6 +464,7 @@ def train(
     critic_opt = keras.optimizers.Adam(critic_lr)
     os.makedirs(save_path, exist_ok=True)
 
+    # Инициализируем коэффициент KL и параметры ранней остановки
     kl_coef = teacher_kl
     best_profit = -np.inf
     best_actor_path = os.path.join(save_path, "actor_best.h5")
@@ -460,6 +477,7 @@ def train(
     val_log: List[Dict[str, float]] = []
 
     for step in range(updates):
+        # Сбор траекторий и обновление параметров
         traj = collect_trajectories(
             train_df,
             actor,
@@ -494,6 +512,7 @@ def train(
         metrics["avg_return"] = avg_ret
         train_log.append(metrics)
 
+        # Периодически оцениваем политику на валидационном наборе
         if (step + 1) % val_interval == 0:
             val_metrics = evaluate_profit(val_env, actor, seq_len, feature_dim)
             val_log.append(val_metrics)
@@ -511,6 +530,7 @@ def train(
     actor.load_weights(best_actor_path)
     critic.load_weights(best_critic_path)
 
+    # Финальная оценка на тестовой выборке и сохранение графика
     test_env = BacktestEnv(
         test_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats
     )
