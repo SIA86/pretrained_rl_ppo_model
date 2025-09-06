@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 from tensorflow import keras
 
-from .backtest_env import BacktestEnv
+from .backtest_env import BacktestEnv, EnvConfig, DEFAULT_CONFIG
+from .normalisation import NormalizationStats
 from .residual_lstm import (
     apply_action_mask,
     build_stacked_residual_lstm,
@@ -60,90 +62,179 @@ class Trajectory:
     masks: np.ndarray
 
 
+def prepare_datasets(
+    df: pd.DataFrame,
+    feature_cols: Optional[List[str]] = None,
+    splits: Tuple[float, float, float] = (0.7, 0.15, 0.15),
+    norm_kind: str = "zscore",
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str], NormalizationStats]:
+    """Разбить ``df`` на Train/Val/Test и нормализовать признаки."""
+
+    assert abs(sum(splits) - 1.0) < 1e-8
+    n = len(df)
+    s1 = int(n * splits[0])
+    s2 = int(n * (splits[0] + splits[1]))
+    train_df = df.iloc[:s1].reset_index(drop=True).copy()
+    val_df = df.iloc[s1:s2].reset_index(drop=True).copy()
+    test_df = df.iloc[s2:].reset_index(drop=True).copy()
+
+    if feature_cols is None:
+        feature_cols = [
+            c
+            for c in df.columns
+            if c != "close" and np.issubdtype(df[c].dtype, np.number)
+        ]
+
+    feat_stats = NormalizationStats(kind=norm_kind).fit(
+        train_df[feature_cols].to_numpy(np.float32)
+    )
+    for part in (train_df, val_df, test_df):
+        part[feature_cols] = feat_stats.transform(part[feature_cols].to_numpy(np.float32))
+
+    cfg = DEFAULT_CONFIG._replace(max_steps=len(train_df) - 1)
+    tmp_env = BacktestEnv(train_df, feature_cols=feature_cols, cfg=cfg)
+    states: List[np.ndarray] = []
+    obs = tmp_env.reset()
+    states.append(obs["state"])
+    for _ in range(cfg.max_steps):
+        obs, _, done, _ = tmp_env.step(3)
+        states.append(obs["state"])
+        if done:
+            break
+    state_stats = NormalizationStats().fit(np.array(states, dtype=np.float32))
+    return train_df, val_df, test_df, feature_cols, state_stats
+
+
 def collect_trajectories(
-    env: BacktestEnv,
+    train_df: pd.DataFrame,
     actor: keras.Model,
     critic: keras.Model,
-    batch_size: int,
+    cfg: EnvConfig,
+    feature_cols: List[str],
+    state_stats: NormalizationStats,
+    n_env: int,
+    rollout: int,
     seq_len: int,
-    feature_dim: int,
     gamma: float = 0.99,
     lam: float = 0.95,
 ) -> Trajectory:
-    """Сгенерировать траектории и посчитать преимущества по GAE."""
+    """Собрать батч траекторий из ``n_env`` сред с пересэмплингом окон."""
 
-    obs_buf: List[np.ndarray] = []
-    act_buf: List[int] = []
-    rew_buf: List[float] = []
-    val_buf: List[float] = []
-    logp_buf: List[float] = []
-    mask_buf: List[np.ndarray] = []
+    L = cfg.max_steps + 1
+    max_start = len(train_df) - L
+    starts = np.arange(max_start + 1)
 
-    obs = env.reset()
-    state_hist = [obs["state"]]
-    for _ in range(seq_len - 1):
-        obs, _, done, _ = env.step(3)
-        state_hist.append(obs["state"])
-        if done:
-            break
+    envs: List[BacktestEnv] = []
+    state_hists: List[List[np.ndarray]] = []
+    for _ in range(n_env):
+        s = int(np.random.choice(starts))
+        window_df = train_df.iloc[s : s + L].reset_index(drop=True)
+        env = BacktestEnv(window_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats)
+        obs = env.reset()
+        hist = [obs["state"]]
+        for _ in range(seq_len - 1):
+            obs, _, done, _ = env.step(3)
+            hist.append(obs["state"])
+            if done:
+                break
+        envs.append(env)
+        state_hists.append(hist)
 
-    for _ in range(batch_size):
-        t = env.t
-        window = env.features[t - seq_len + 1 : t + 1]
-        state_window = np.stack(state_hist[t - seq_len + 1 : t + 1])
-        feat = np.concatenate([window, state_window], axis=1)
-        mask = env.action_mask()
-        logits = actor(feat[None, ...], training=False)
-        _, probs_tf = masked_logits_and_probs(logits, mask[None, :])
-        probs = probs_tf.numpy()[0]
-        if not np.isfinite(probs).all() or probs.sum() <= 0.0:
-            valid_actions = np.flatnonzero(mask)
-            probs = np.zeros(NUM_ACTIONS, dtype=np.float32)
-            probs[valid_actions] = 1.0 / len(valid_actions)
-        action = int(np.random.choice(NUM_ACTIONS, p=probs))
-        logp = float(np.log(probs[action] + 1e-8))
-        value = float(critic(feat[None, ...], training=False).numpy()[0, 0])
+    obs_buf = [[] for _ in range(n_env)]
+    act_buf = [[] for _ in range(n_env)]
+    rew_buf = [[] for _ in range(n_env)]
+    val_buf = [[] for _ in range(n_env)]
+    next_val_buf = [[] for _ in range(n_env)]
+    logp_buf = [[] for _ in range(n_env)]
+    mask_buf = [[] for _ in range(n_env)]
+    done_buf = [[] for _ in range(n_env)]
 
-        next_obs, reward, done, _ = env.step(action)
-        obs_buf.append(feat)
-        act_buf.append(action)
-        rew_buf.append(reward)
-        val_buf.append(value)
-        logp_buf.append(logp)
-        mask_buf.append(mask.astype(np.float32))
+    for _ in range(rollout):
+        for i, env in enumerate(envs):
+            if env.done:
+                s = int(np.random.choice(starts))
+                window_df = train_df.iloc[s : s + L].reset_index(drop=True)
+                env = BacktestEnv(window_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats)
+                obs = env.reset()
+                hist = [obs["state"]]
+                for _ in range(seq_len - 1):
+                    obs, _, done, _ = env.step(3)
+                    hist.append(obs["state"])
+                    if done:
+                        break
+                envs[i] = env
+                state_hists[i] = hist
 
-        state_hist.append(next_obs["state"])
-        obs = next_obs
-        if done:
-            break
+            t = env.t
+            window = env.features[t - seq_len + 1 : t + 1]
+            state_window = np.stack(state_hists[i][t - seq_len + 1 : t + 1])
+            feat = np.concatenate([window, state_window], axis=1)
+            mask = env.action_mask()
+            logits = actor(feat[None, ...], training=False)
+            _, probs_tf = masked_logits_and_probs(logits, mask[None, :])
+            probs = probs_tf.numpy()[0]
+            if not np.isfinite(probs).all() or probs.sum() <= 0.0:
+                valid_actions = np.flatnonzero(mask)
+                probs = np.zeros(NUM_ACTIONS, dtype=np.float32)
+                probs[valid_actions] = 1.0 / len(valid_actions)
+            action = int(np.random.choice(NUM_ACTIONS, p=probs))
+            logp = float(np.log(probs[action] + 1e-8))
+            value = float(critic(feat[None, ...], training=False).numpy()[0, 0])
+            next_obs, reward, done, _ = env.step(action)
+            state_hists[i].append(next_obs["state"])
+            if done:
+                next_value = 0.0
+            else:
+                t2 = env.t
+                window2 = env.features[t2 - seq_len + 1 : t2 + 1]
+                state_window2 = np.stack(state_hists[i][t2 - seq_len + 1 : t2 + 1])
+                feat2 = np.concatenate([window2, state_window2], axis=1)
+                next_value = float(
+                    critic(feat2[None, ...], training=False).numpy()[0, 0]
+                )
 
-    # bootstrap value
-    if not getattr(env, "done", False):
-        t = env.t
-        window = env.features[t - seq_len + 1 : t + 1]
-        state_window = np.stack(state_hist[t - seq_len + 1 : t + 1])
-        last_feat = np.concatenate([window, state_window], axis=1)
-        last_val = critic(last_feat[None, ...], training=False).numpy()[0, 0]
-    else:
-        last_val = 0.0
-    vals = np.append(val_buf, last_val)
+            obs_buf[i].append(feat)
+            act_buf[i].append(action)
+            rew_buf[i].append(reward)
+            val_buf[i].append(value)
+            next_val_buf[i].append(next_value)
+            logp_buf[i].append(logp)
+            mask_buf[i].append(mask.astype(np.float32))
+            done_buf[i].append(done)
 
-    # Generalised Advantage Estimation
-    adv = np.zeros_like(rew_buf, dtype=np.float32)
-    gae = 0.0
-    for t in reversed(range(len(rew_buf))):
-        delta = rew_buf[t] + gamma * vals[t + 1] - vals[t]
-        gae = delta + gamma * lam * gae
-        adv[t] = gae
-    ret = adv + vals[:-1]
+    obs_arr: List[np.ndarray] = []
+    act_arr: List[np.ndarray] = []
+    adv_arr: List[np.ndarray] = []
+    ret_arr: List[np.ndarray] = []
+    logp_arr: List[np.ndarray] = []
+    mask_arr: List[np.ndarray] = []
+    for i in range(n_env):
+        rewards = np.array(rew_buf[i], dtype=np.float32)
+        values = np.array(val_buf[i], dtype=np.float32)
+        next_values = np.array(next_val_buf[i], dtype=np.float32)
+        dones = np.array(done_buf[i], dtype=np.bool_)
+        adv = np.zeros_like(rewards)
+        gae = 0.0
+        for t in reversed(range(len(rewards))):
+            nonterm = 1.0 - float(dones[t])
+            delta = rewards[t] + gamma * next_values[t] * nonterm - values[t]
+            gae = delta + gamma * lam * nonterm * gae
+            adv[t] = gae
+        ret = adv + values
+        obs_arr.append(np.array(obs_buf[i], dtype=np.float32))
+        act_arr.append(np.array(act_buf[i], dtype=np.int32))
+        adv_arr.append(adv.astype(np.float32))
+        ret_arr.append(ret.astype(np.float32))
+        logp_arr.append(np.array(logp_buf[i], dtype=np.float32))
+        mask_arr.append(np.array(mask_buf[i], dtype=np.float32))
 
     return Trajectory(
-        obs=np.array(obs_buf, dtype=np.float32),
-        actions=np.array(act_buf, dtype=np.int32),
-        advantages=adv,
-        returns=ret.astype(np.float32),
-        old_logp=np.array(logp_buf, dtype=np.float32),
-        masks=np.array(mask_buf, dtype=np.float32),
+        obs=np.concatenate(obs_arr, axis=0),
+        actions=np.concatenate(act_arr, axis=0),
+        advantages=np.concatenate(adv_arr, axis=0),
+        returns=np.concatenate(ret_arr, axis=0),
+        old_logp=np.concatenate(logp_arr, axis=0),
+        masks=np.concatenate(mask_arr, axis=0),
     )
 
 
@@ -276,20 +367,21 @@ def evaluate_profit(
 
 
 def train(
-    train_env: BacktestEnv,
-    test_env: BacktestEnv,
+    df: pd.DataFrame,
+    cfg: EnvConfig,
     seq_len: int,
-    feature_dim: int,
     actor_weights: str,
-    batch_size: int = 512,
     save_path: str = "ppo",
-    total_steps: int = 1024,
+    updates: int = 10,
+    n_env: int = 32,
+    rollout: int = 256,
     teacher_kl: float = 0.1,
     kl_decay: float = 0.99,
-    early_stop_patience: int = 10,
 ):
-    """Основной цикл обучения PPO."""
+    """Основной цикл обучения PPO поверх табличных данных."""
 
+    train_df, val_df, test_df, feature_cols, state_stats = prepare_datasets(df)
+    feature_dim = len(feature_cols) + 5
     actor, critic = build_actor_critic(seq_len, feature_dim)
     teacher = build_stacked_residual_lstm(
         seq_len,
@@ -307,21 +399,23 @@ def train(
     os.makedirs(save_path, exist_ok=True)
     writer = tf.summary.create_file_writer(os.path.join(save_path, "logs"))
 
-    steps = 0
     kl_coef = teacher_kl
     best_profit = -np.inf
-    wait = 0
     best_actor_path = os.path.join(save_path, "actor_best.h5")
     best_critic_path = os.path.join(save_path, "critic_best.h5")
 
-    while steps < total_steps and wait < early_stop_patience:
+    val_env = BacktestEnv(val_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats)
+    for step in range(updates):
         traj = collect_trajectories(
-            train_env,
+            train_df,
             actor,
             critic,
-            batch_size=batch_size,
+            cfg,
+            feature_cols,
+            state_stats,
+            n_env=n_env,
+            rollout=rollout,
             seq_len=seq_len,
-            feature_dim=feature_dim,
         )
         kl_coef, metrics = ppo_update(
             actor,
@@ -333,24 +427,20 @@ def train(
             kl_coef=kl_coef,
             kl_decay=kl_decay,
         )
-        steps += len(traj.actions)
         avg_ret = float(np.mean(traj.returns))
-        profit = evaluate_profit(test_env, actor, seq_len, feature_dim)
+        profit = evaluate_profit(val_env, actor, seq_len, feature_dim)
         if profit > best_profit:
             best_profit = profit
-            wait = 0
             actor.save_weights(best_actor_path)
             critic.save_weights(best_critic_path)
-        else:
-            wait += 1
         print(
-            f"step={steps} avg_reward={avg_ret:.3f} profit={profit:.3f} kl_coef={kl_coef:.4f}"
+            f"update={step} avg_reward={avg_ret:.3f} profit={profit:.3f} kl_coef={kl_coef:.4f}"
         )
         with writer.as_default():
-            tf.summary.scalar("avg_return", avg_ret, step=steps)
-            tf.summary.scalar("profit", profit, step=steps)
+            tf.summary.scalar("avg_return", avg_ret, step=step)
+            tf.summary.scalar("profit", profit, step=step)
             for k, v in metrics.items():
-                tf.summary.scalar(k, v, step=steps)
+                tf.summary.scalar(k, v, step=step)
     writer.flush()
 
     actor.save_weights(os.path.join(save_path, "actor.h5"))
@@ -358,7 +448,7 @@ def train(
     actor.load_weights(best_actor_path)
     critic.load_weights(best_critic_path)
 
-    # Inference on test data
+    test_env = BacktestEnv(test_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats)
     evaluate_profit(test_env, actor, seq_len, feature_dim)
     fig = test_env.plot("PPO inference")
     os.makedirs("results", exist_ok=True)
@@ -368,6 +458,7 @@ def train(
 
 __all__ = [
     "build_actor_critic",
+    "prepare_datasets",
     "collect_trajectories",
     "ppo_update",
     "train",
