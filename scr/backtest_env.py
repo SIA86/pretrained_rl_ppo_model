@@ -199,7 +199,7 @@ class BacktestEnv:
         price_col: str = "close",
         cfg: EnvConfig = DEFAULT_CONFIG,
         state_stats: Optional[NormalizationStats] = None,
-        ppo_true: bool = True
+        ppo_true: bool = False
     ):
         """Подготовка данных и настройка параметров среды.
 
@@ -266,7 +266,7 @@ class BacktestEnv:
         self.equity = 0.0  # накопленная доходность
         self.realized_pnl = 0.0  # реализованный PnL
         self.unrealized_pnl = 0.0  # нереализованный PnL
-        self.flat_steps = 1  # количество шагов вне позиции
+        self.flat_steps = 0  # количество шагов вне позиции
         self.hold_steps = 0  # количество шагов в позиции
         self.drawdown = 0.0  # текущая просадка
         self.worst_price = self.prices[0]
