@@ -446,6 +446,8 @@ def evaluate_profit(
         for line in env.metrics_report().splitlines()
     }
     metrics["Equity"] = float(env.equity)
+    if debug:
+        logger.debug("evaluate_profit metrics=%s", metrics)
     return metrics
 
 
@@ -567,6 +569,8 @@ def train(
                 val_env, actor, seq_len, feature_dim, debug=debug
             )
             val_log.append(val_metrics)
+            if debug:
+                logger.debug("validation metrics=%s", val_metrics)
             profit = val_metrics.get("Equity", 0.0)
             if profit > best_profit:
                 best_profit = profit
