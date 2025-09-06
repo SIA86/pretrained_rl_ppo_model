@@ -8,6 +8,7 @@ teacher‑модели с затухающим коэффициентом и р�
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -26,6 +27,8 @@ from .residual_lstm import (
     build_head,
     masked_logits_and_probs,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def build_actor_critic(
@@ -132,10 +135,15 @@ def collect_trajectories(
     num_actions: int,
     gamma: float = 0.99,
     lam: float = 0.95,
+    debug: bool = False,
 ) -> Trajectory:
     """Собрать батч траекторий из ``n_env`` сред с пересэмплингом окон."""
 
     L = cfg.max_steps + 1
+    if debug:
+        logger.debug(
+            "collect_trajectories: n_env=%d rollout=%d seq_len=%d", n_env, rollout, seq_len
+        )
     max_start = len(train_df) - L
     starts = np.arange(max_start + 1)
 
@@ -204,6 +212,15 @@ def collect_trajectories(
             value = float(critic(feat[None, ...], training=False).numpy()[0, 0])
             next_obs, reward, done, _ = env.step(action)
             state_hists[i].append(next_obs["state"])
+            if debug:
+                logger.debug(
+                    "env=%d t=%d action=%d reward=%.4f done=%s",
+                    i,
+                    env.t,
+                    action,
+                    reward,
+                    done,
+                )
             if done:
                 next_value = 0.0
             else:
@@ -279,6 +296,7 @@ def ppo_update(
     kl_decay: float,
     max_grad_norm: Optional[float] = None,
     target_kl: Optional[float] = None,
+    debug: bool = False,
 ) -> Tuple[float, Dict[str, float]]:
     """Выполнить несколько эпох обновления PPO.
     Возвращает обновлённый коэффициент KL и словарь метрик."""
@@ -301,7 +319,9 @@ def ppo_update(
     clipfracs: List[float] = []
 
     # Запускаем несколько эпох обучения на собранном батче
-    for _ in range(epochs):
+    for ep in range(epochs):
+        if debug:
+            logger.debug("ppo_update: epoch %d/%d", ep + 1, epochs)
         for batch in dataset:
             b_obs, b_act, b_adv, b_ret, b_old, b_mask = batch
             b_adv = (b_adv - tf.reduce_mean(b_adv)) / (tf.math.reduce_std(b_adv) + 1e-8)
@@ -362,6 +382,14 @@ def ppo_update(
                     )
                 )
             )
+            if debug:
+                logger.debug(
+                    "batch: policy_loss=%.5f value_loss=%.5f entropy=%.5f approx_kl=%.5f",
+                    float(policy_loss),
+                    float(value_loss),
+                    float(entropy),
+                    approx_kls[-1],
+                )
             if target_kl is not None and approx_kls[-1] > target_kl:
                 break
 
@@ -377,7 +405,11 @@ def ppo_update(
 
 
 def evaluate_profit(
-    env: BacktestEnv, actor: keras.Model, seq_len: int, feature_dim: int
+    env: BacktestEnv,
+    actor: keras.Model,
+    seq_len: int,
+    feature_dim: int,
+    debug: bool = False,
 ) -> Dict[str, float]:
     """Запустить политику в среде и вернуть метрики."""
 
@@ -400,6 +432,13 @@ def evaluate_profit(
         action = int(tf.argmax(masked, axis=-1)[0])
         obs, _, done, _ = env.step(action)
         state_hist.append(obs["state"])
+        if debug:
+            logger.debug(
+                "evaluate_profit: t=%d action=%d equity=%.4f",
+                env.t,
+                action,
+                env.equity,
+            )
         if done:
             break
     metrics = {
@@ -407,6 +446,8 @@ def evaluate_profit(
         for line in env.metrics_report().splitlines()
     }
     metrics["Equity"] = float(env.equity)
+    if debug:
+        logger.debug("evaluate_profit metrics=%s", metrics)
     return metrics
 
 
@@ -436,6 +477,7 @@ def train(
     max_grad_norm: float,
     target_kl: float,
     val_interval: int,
+    debug: bool = False,
 ) -> Tuple[keras.Model, keras.Model, List[Dict[str, float]], List[Dict[str, float]]]:
     """Основной цикл обучения PPO поверх табличных данных."""
 
@@ -459,6 +501,11 @@ def train(
     teacher = build_head(teacher_backbone, num_actions)
     teacher.load_weights(teacher_weights)
     teacher.trainable = False
+    if debug:
+        logging.basicConfig(
+            level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s"
+        )
+        logger.debug("train: debug mode enabled")
 
     actor_opt = keras.optimizers.Adam(actor_lr)
     critic_opt = keras.optimizers.Adam(critic_lr)
@@ -489,6 +536,7 @@ def train(
             rollout=rollout,
             seq_len=seq_len,
             num_actions=num_actions,
+            debug=debug,
         )
         kl_coef, metrics = ppo_update(
             actor,
@@ -507,15 +555,22 @@ def train(
             kl_decay=kl_decay,
             max_grad_norm=max_grad_norm,
             target_kl=target_kl,
+            debug=debug,
         )
         avg_ret = float(np.mean(traj.returns))
         metrics["avg_return"] = avg_ret
         train_log.append(metrics)
+        if debug:
+            logger.debug("update=%d metrics=%s", step, metrics)
 
         # Периодически оцениваем политику на валидационном наборе
         if (step + 1) % val_interval == 0:
-            val_metrics = evaluate_profit(val_env, actor, seq_len, feature_dim)
+            val_metrics = evaluate_profit(
+                val_env, actor, seq_len, feature_dim, debug=debug
+            )
             val_log.append(val_metrics)
+            if debug:
+                logger.debug("validation metrics=%s", val_metrics)
             profit = val_metrics.get("Equity", 0.0)
             if profit > best_profit:
                 best_profit = profit
@@ -534,7 +589,7 @@ def train(
     test_env = BacktestEnv(
         test_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats
     )
-    evaluate_profit(test_env, actor, seq_len, feature_dim)
+    evaluate_profit(test_env, actor, seq_len, feature_dim, debug=debug)
     fig = test_env.plot("PPO inference")
     os.makedirs("results", exist_ok=True)
     fig.savefig(os.path.join("results", "ppo_inference.png"))
