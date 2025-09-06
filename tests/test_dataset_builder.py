@@ -253,15 +253,21 @@ def test_downsample_hold_wait():
     )
     splits = builder.fit_transform(df)
 
-    base_val = base_splits["val"]
-    down_val = splits["val"]
-    expected_val = _downsample_hold_wait(*base_val, betta=0.5)
+    base_tr = base_splits["train"]
+    down_tr = splits["train"]
+    expected_tr = _downsample_hold_wait(*base_tr, betta=0.5)
 
-    for arr_d, arr_e in zip(down_val, expected_val):
+    for arr_d, arr_e in zip(down_tr, expected_tr):
         assert np.array_equal(arr_d, arr_e)
 
-    cls_before = np.argmax(base_val[1], axis=1)
+    cls_before = np.argmax(base_tr[1], axis=1)
     hw_before = np.isin(cls_before, [2, 3]).sum()
-    cls_after = np.argmax(down_val[1], axis=1)
+    cls_after = np.argmax(down_tr[1], axis=1)
     hw_after = np.isin(cls_after, [2, 3]).sum()
     assert hw_after == hw_before - int(hw_before * 0.5)
+
+    # validation split should remain unchanged
+    base_val = base_splits["val"]
+    down_val = splits["val"]
+    for arr_d, arr_b in zip(down_val, base_val):
+        assert np.array_equal(arr_d, arr_b)
