@@ -7,7 +7,8 @@ import pytest
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 from scr.residual_lstm import (
-    build_stacked_residual_lstm,
+    build_backbone,
+    build_head,
     masked_logits_and_probs,
     masked_categorical_crossentropy,
     masked_accuracy,
@@ -17,9 +18,8 @@ from scr.residual_lstm import (
 
 
 def test_model_output_shape_and_inputs():
-    model = build_stacked_residual_lstm(
-        seq_len=5, feature_dim=5, units_per_layer=(4, 4)
-    )
+    backbone = build_backbone(seq_len=5, feature_dim=5, units_per_layer=(4, 4))
+    model = build_head(backbone, num_classes=4)
     assert len(model.inputs) == 1
     x = tf.random.normal((2, 5, 5))
     logits = model(x)

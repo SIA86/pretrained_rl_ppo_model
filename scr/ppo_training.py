@@ -21,7 +21,8 @@ from .backtest_env import BacktestEnv, EnvConfig, DEFAULT_CONFIG
 from .normalisation import NormalizationStats
 from .residual_lstm import (
     apply_action_mask,
-    build_stacked_residual_lstm,
+    build_backbone,
+    build_head,
     masked_logits_and_probs,
 )
 
@@ -31,24 +32,24 @@ DROPOUT = 0.5
 
 
 def build_actor_critic(
-    seq_len: int, feature_dim: int, num_actions: int = NUM_ACTIONS
+    seq_len: int,
+    feature_dim: int,
+    num_actions: int = NUM_ACTIONS,
+    backbone_weights: str | None = None,
 ) -> Tuple[keras.Model, keras.Model]:
-    """Создать сети актёра и критика с общей архитектурой."""
+    """Создать сети актёра и критика с общей архитектурой и опциональной загрузкой бэкбона."""
 
-    actor = build_stacked_residual_lstm(
-        seq_len,
-        feature_dim,
-        num_classes=num_actions,
-        units_per_layer=UNITS_PER_LAYER,
-        dropout=DROPOUT,
+    actor_backbone = build_backbone(
+        seq_len, feature_dim, units_per_layer=UNITS_PER_LAYER, dropout=DROPOUT
     )
-    critic = build_stacked_residual_lstm(
-        seq_len,
-        feature_dim,
-        num_classes=1,
-        units_per_layer=UNITS_PER_LAYER,
-        dropout=DROPOUT,
+    critic_backbone = build_backbone(
+        seq_len, feature_dim, units_per_layer=UNITS_PER_LAYER, dropout=DROPOUT
     )
+    if backbone_weights:
+        actor_backbone.load_weights(backbone_weights)
+        critic_backbone.load_weights(backbone_weights)
+    actor = build_head(actor_backbone, num_actions)
+    critic = build_head(critic_backbone, 1)
     return actor, critic
 
 
@@ -370,7 +371,8 @@ def train(
     df: pd.DataFrame,
     cfg: EnvConfig,
     seq_len: int,
-    actor_weights: str,
+    teacher_weights: str,
+    backbone_weights: str,
     save_path: str = "ppo",
     updates: int = 10,
     n_env: int = 32,
@@ -382,16 +384,14 @@ def train(
 
     train_df, val_df, test_df, feature_cols, state_stats = prepare_datasets(df)
     feature_dim = len(feature_cols) + 5
-    actor, critic = build_actor_critic(seq_len, feature_dim)
-    teacher = build_stacked_residual_lstm(
-        seq_len,
-        feature_dim,
-        num_classes=NUM_ACTIONS,
-        units_per_layer=UNITS_PER_LAYER,
-        dropout=DROPOUT,
+    actor, critic = build_actor_critic(
+        seq_len, feature_dim, num_actions=NUM_ACTIONS, backbone_weights=backbone_weights
     )
-    actor.load_weights(actor_weights)
-    teacher.load_weights(actor_weights)
+    teacher_backbone = build_backbone(
+        seq_len, feature_dim, units_per_layer=UNITS_PER_LAYER, dropout=DROPOUT
+    )
+    teacher = build_head(teacher_backbone, NUM_ACTIONS)
+    teacher.load_weights(teacher_weights)
     teacher.trainable = False
 
     actor_opt = keras.optimizers.Adam(3e-4)

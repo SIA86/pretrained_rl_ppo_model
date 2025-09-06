@@ -18,15 +18,14 @@ NUM_CLASSES = 4
 VERY_NEG = -1e9
 
 
-def build_stacked_residual_lstm(
+def build_backbone(
     seq_len: int,
     feature_dim: int,
-    num_classes: int = NUM_CLASSES,
     units_per_layer: Sequence[int] = (128, 128, 64),
     dropout: float = 0.2,
     ln_eps: float = 1e-5,
 ) -> keras.Model:
-    """Построить остаточную стековую LSTM с одним входом."""
+    """Построить бэкбон остаточной стековой LSTM."""
 
     def _branch(inp, dim, prefix: str):
         x = inp
@@ -49,13 +48,42 @@ def build_stacked_residual_lstm(
         return last
 
     x_in = keras.Input(shape=(seq_len, feature_dim), name="features")
-
     feat_last = _branch(x_in, feature_dim, "feat")
-    hidden = layers.Dense(units_per_layer[-1], activation="relu", name="head_dense")(
-        feat_last
+    return keras.Model(inputs=x_in, outputs=feat_last, name="ResidualLSTMBackbone")
+
+
+def build_head(
+    backbone: keras.Model, num_classes: int, units: Optional[int] = None
+) -> keras.Model:
+    """Добавить голову к бэкбону и вернуть полную модель."""
+    x = backbone.output
+    if units is None:
+        x = layers.Dense(
+            backbone.output_shape[-1], activation="relu", name="head_dense"
+        )(x)
+    else:
+        x = layers.Dense(units, activation="relu", name="head_dense")(x)
+    logits = layers.Dense(num_classes, name="logits")(x)
+    return keras.Model(inputs=backbone.input, outputs=logits, name="ResidualLSTM")
+
+
+def build_stacked_residual_lstm(
+    seq_len: int,
+    feature_dim: int,
+    num_classes: int = NUM_CLASSES,
+    units_per_layer: Sequence[int] = (128, 128, 64),
+    dropout: float = 0.2,
+    ln_eps: float = 1e-5,
+) -> keras.Model:
+    """Совместимая обёртка для старого API."""
+    backbone = build_backbone(
+        seq_len,
+        feature_dim,
+        units_per_layer=units_per_layer,
+        dropout=dropout,
+        ln_eps=ln_eps,
     )
-    logits = layers.Dense(num_classes, name="logits")(hidden)
-    return keras.Model(inputs=x_in, outputs=logits, name="ResidualLSTM")
+    return build_head(backbone, num_classes, units=None)
 
 
 def apply_action_mask(

@@ -10,7 +10,7 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 from scr.q_labels_matching import enrich_q_labels_trend_one_side
 from scr.dataset_builder import DatasetBuilderForYourColumns, NUM_CLASSES
-from scr.residual_lstm import build_stacked_residual_lstm
+from scr.residual_lstm import build_backbone, build_head
 from scr.train_eval import _unpack_batch
 from scr.calibrate import calibrate_model
 from scr.backtest_env import run_backtest_with_logits
@@ -50,11 +50,12 @@ def test_full_pipeline(tmp_path):
     splits = builder.fit_transform(df, return_indices=True)
     ds_tr, ds_va, ds_te = builder.as_tf_datasets(splits)
 
-    model = build_stacked_residual_lstm(
+    backbone = build_backbone(
         seq_len=5,
         feature_dim=len(builder.feature_names) + len(builder.account_names),
         units_per_layer=(8, 8),
     )
+    model = build_head(backbone, NUM_CLASSES)
 
     batch = next(iter(ds_tr.take(1)))
     xb, mb, yb, *_ = _unpack_batch(batch)
