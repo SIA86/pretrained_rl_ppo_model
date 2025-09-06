@@ -386,6 +386,8 @@ def fit_model(
     lr_restart_patience: int = 3,
     lr_restart_shrink: float = 0.5,
     best_path: str = "best_lstm_weights.h5",
+    backbone: keras.Model | None = None,
+    backbone_path: str | None = None,
 ):
     """Обучить ``model`` и вернуть историю в виде словаря."""
 
@@ -485,6 +487,8 @@ def fit_model(
             no_improve = 0
             since_restart = 0
             model.save_weights(best_path)
+            if backbone is not None and backbone_path is not None:
+                backbone.save_weights(backbone_path)
         else:
             no_improve += 1
             since_restart += 1
@@ -504,6 +508,8 @@ def fit_model(
 
     try:
         model.load_weights(best_path)
+        if backbone is not None and backbone_path is not None:
+            backbone.load_weights(backbone_path)
         print(f"Restored best weights from {best_path}")
     except Exception as e:  # pragma: no cover - best effort
         print(f"Warning: could not restore best weights: {e}")

@@ -14,7 +14,7 @@ from scr.ppo_training import (
     ppo_update,
     prepare_datasets,
 )
-from scr.residual_lstm import build_stacked_residual_lstm, VERY_NEG
+from scr.residual_lstm import build_backbone, build_head, VERY_NEG
 
 
 def make_df():
@@ -66,7 +66,8 @@ def test_ppo_update_kl_decay():
     seq_len = 1
     feature_dim = len(feat_cols) + 5
     actor, critic = build_actor_critic(seq_len, feature_dim)
-    teacher = build_stacked_residual_lstm(seq_len, feature_dim, num_classes=4)
+    teacher_backbone = build_backbone(seq_len, feature_dim)
+    teacher = build_head(teacher_backbone, 4)
     traj = collect_trajectories(
         train_df,
         actor,
