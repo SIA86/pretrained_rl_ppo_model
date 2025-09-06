@@ -18,6 +18,7 @@ import tensorflow as tf
 from tensorflow import keras
 
 from .backtest_env import BacktestEnv, EnvConfig, DEFAULT_CONFIG
+from .dataset_builder import extract_features
 from .normalisation import NormalizationStats
 from .residual_lstm import (
     apply_action_mask,
@@ -26,24 +27,23 @@ from .residual_lstm import (
     masked_logits_and_probs,
 )
 
-NUM_ACTIONS = 4
-UNITS_PER_LAYER = [64, 32]
-DROPOUT = 0.5
-
 
 def build_actor_critic(
     seq_len: int,
     feature_dim: int,
-    num_actions: int = NUM_ACTIONS,
+    *,
+    num_actions: int,
+    units_per_layer: List[int],
+    dropout: float,
     backbone_weights: str | None = None,
 ) -> Tuple[keras.Model, keras.Model]:
     """Создать сети актёра и критика с общей архитектурой и опциональной загрузкой бэкбона."""
 
     actor_backbone = build_backbone(
-        seq_len, feature_dim, units_per_layer=UNITS_PER_LAYER, dropout=DROPOUT
+        seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
     )
     critic_backbone = build_backbone(
-        seq_len, feature_dim, units_per_layer=UNITS_PER_LAYER, dropout=DROPOUT
+        seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
     )
     if backbone_weights:
         actor_backbone.load_weights(backbone_weights)
@@ -65,11 +65,23 @@ class Trajectory:
 
 def prepare_datasets(
     df: pd.DataFrame,
-    feature_cols: Optional[List[str]] = None,
-    splits: Tuple[float, float, float] = (0.7, 0.15, 0.15),
+    *,
+    splits: Tuple[float, float, float] = (0.8, 0.1, 0.1),
     norm_kind: str = "zscore",
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str], NormalizationStats]:
+) -> Tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    List[str],
+    NormalizationStats,
+    NormalizationStats,
+]:
     """Разбить ``df`` на Train/Val/Test и нормализовать признаки."""
+
+    close = df["close"].to_numpy(np.float32)
+    feats, feature_cols = extract_features(df, drop_cols=["close"])
+    df = pd.DataFrame(feats, columns=feature_cols)
+    df["close"] = close
 
     assert abs(sum(splits) - 1.0) < 1e-8
     n = len(df)
@@ -79,18 +91,13 @@ def prepare_datasets(
     val_df = df.iloc[s1:s2].reset_index(drop=True).copy()
     test_df = df.iloc[s2:].reset_index(drop=True).copy()
 
-    if feature_cols is None:
-        feature_cols = [
-            c
-            for c in df.columns
-            if c != "close" and np.issubdtype(df[c].dtype, np.number)
-        ]
-
     feat_stats = NormalizationStats(kind=norm_kind).fit(
         train_df[feature_cols].to_numpy(np.float32)
     )
     for part in (train_df, val_df, test_df):
-        part[feature_cols] = feat_stats.transform(part[feature_cols].to_numpy(np.float32))
+        part[feature_cols] = feat_stats.transform(
+            part[feature_cols].to_numpy(np.float32)
+        )
 
     cfg = DEFAULT_CONFIG._replace(max_steps=len(train_df) - 1)
     tmp_env = BacktestEnv(train_df, feature_cols=feature_cols, cfg=cfg)
@@ -103,7 +110,7 @@ def prepare_datasets(
         if done:
             break
     state_stats = NormalizationStats().fit(np.array(states, dtype=np.float32))
-    return train_df, val_df, test_df, feature_cols, state_stats
+    return train_df, val_df, test_df, feature_cols, feat_stats, state_stats
 
 
 def collect_trajectories(
@@ -116,6 +123,7 @@ def collect_trajectories(
     n_env: int,
     rollout: int,
     seq_len: int,
+    num_actions: int,
     gamma: float = 0.99,
     lam: float = 0.95,
 ) -> Trajectory:
@@ -130,7 +138,9 @@ def collect_trajectories(
     for _ in range(n_env):
         s = int(np.random.choice(starts))
         window_df = train_df.iloc[s : s + L].reset_index(drop=True)
-        env = BacktestEnv(window_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats)
+        env = BacktestEnv(
+            window_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats
+        )
         obs = env.reset()
         hist = [obs["state"]]
         for _ in range(seq_len - 1):
@@ -155,7 +165,12 @@ def collect_trajectories(
             if env.done:
                 s = int(np.random.choice(starts))
                 window_df = train_df.iloc[s : s + L].reset_index(drop=True)
-                env = BacktestEnv(window_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats)
+                env = BacktestEnv(
+                    window_df,
+                    feature_cols=feature_cols,
+                    cfg=cfg,
+                    state_stats=state_stats,
+                )
                 obs = env.reset()
                 hist = [obs["state"]]
                 for _ in range(seq_len - 1):
@@ -176,9 +191,9 @@ def collect_trajectories(
             probs = probs_tf.numpy()[0]
             if not np.isfinite(probs).all() or probs.sum() <= 0.0:
                 valid_actions = np.flatnonzero(mask)
-                probs = np.zeros(NUM_ACTIONS, dtype=np.float32)
+                probs = np.zeros(num_actions, dtype=np.float32)
                 probs[valid_actions] = 1.0 / len(valid_actions)
-            action = int(np.random.choice(NUM_ACTIONS, p=probs))
+            action = int(np.random.choice(num_actions, p=probs))
             logp = float(np.log(probs[action] + 1e-8))
             value = float(critic(feat[None, ...], training=False).numpy()[0, 0])
             next_obs, reward, done, _ = env.step(action)
@@ -245,14 +260,18 @@ def ppo_update(
     traj: Trajectory,
     actor_opt: keras.optimizers.Optimizer,
     critic_opt: keras.optimizers.Optimizer,
-    clip_ratio: float = 0.2,
-    c1: float = 0.5,
-    c2: float = 0.01,
-    epochs: int = 5,
-    batch_size: int = 32,
+    *,
+    num_actions: int,
+    clip_ratio: float,
+    c1: float,
+    c2: float,
+    epochs: int,
+    batch_size: int,
     teacher: Optional[keras.Model] = None,
-    kl_coef: float = 0.1,
-    kl_decay: float = 0.99,
+    kl_coef: float,
+    kl_decay: float,
+    max_grad_norm: Optional[float] = None,
+    target_kl: Optional[float] = None,
 ) -> Tuple[float, Dict[str, float]]:
     """Выполнить несколько эпох обновления PPO.
     Возвращает обновлённый коэффициент KL и словарь метрик."""
@@ -283,7 +302,7 @@ def ppo_update(
                 masked = apply_action_mask(logits, b_mask)
                 logp_all = tf.nn.log_softmax(masked, axis=-1)
                 logp_act = tf.reduce_sum(
-                    tf.one_hot(b_act, NUM_ACTIONS) * logp_all, axis=-1
+                    tf.one_hot(b_act, num_actions) * logp_all, axis=-1
                 )
                 ratio = tf.exp(logp_act - b_old)
                 clipped = tf.clip_by_value(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio)
@@ -313,6 +332,9 @@ def ppo_update(
 
             a_grads = tape.gradient(actor_loss, actor.trainable_variables)
             c_grads = tape.gradient(critic_loss, critic.trainable_variables)
+            if max_grad_norm is not None:
+                a_grads, _ = tf.clip_by_global_norm(a_grads, max_grad_norm)
+                c_grads, _ = tf.clip_by_global_norm(c_grads, max_grad_norm)
             actor_opt.apply_gradients(zip(a_grads, actor.trainable_variables))
             critic_opt.apply_gradients(zip(c_grads, critic.trainable_variables))
             pi_losses.append(float(policy_loss))
@@ -327,6 +349,8 @@ def ppo_update(
                     )
                 )
             )
+            if target_kl is not None and approx_kls[-1] > target_kl:
+                break
 
     metrics = {
         "policy_loss": float(np.mean(pi_losses)),
@@ -341,8 +365,8 @@ def ppo_update(
 
 def evaluate_profit(
     env: BacktestEnv, actor: keras.Model, seq_len: int, feature_dim: int
-) -> float:
-    """Запустить политику в среде и вернуть итоговый капитал."""
+) -> Dict[str, float]:
+    """Запустить политику в среде и вернуть метрики."""
 
     obs = env.reset()
     state_hist = [obs["state"]]
@@ -364,47 +388,77 @@ def evaluate_profit(
         state_hist.append(obs["state"])
         if done:
             break
-    return float(env.equity)
+    metrics = {
+        line.split(":")[0]: float(line.split(":")[1])
+        for line in env.metrics_report().splitlines()
+    }
+    metrics["Equity"] = float(env.equity)
+    return metrics
 
 
 def train(
     df: pd.DataFrame,
     cfg: EnvConfig,
+    *,
     seq_len: int,
     teacher_weights: str,
     backbone_weights: str,
-    save_path: str = "ppo",
-    updates: int = 10,
-    n_env: int = 32,
-    rollout: int = 256,
-    teacher_kl: float = 0.1,
-    kl_decay: float = 0.99,
-):
+    save_path: str,
+    num_actions: int,
+    units_per_layer: List[int],
+    dropout: float,
+    updates: int,
+    n_env: int,
+    rollout: int,
+    actor_lr: float,
+    critic_lr: float,
+    clip_ratio: float,
+    c1: float,
+    c2: float,
+    epochs: int,
+    batch_size: int,
+    teacher_kl: float,
+    kl_decay: float,
+    max_grad_norm: float,
+    target_kl: float,
+    val_interval: int,
+) -> Tuple[keras.Model, keras.Model, List[Dict[str, float]], List[Dict[str, float]]]:
     """Основной цикл обучения PPO поверх табличных данных."""
 
-    train_df, val_df, test_df, feature_cols, state_stats = prepare_datasets(df)
+    train_df, val_df, test_df, feature_cols, _feat_stats, state_stats = (
+        prepare_datasets(df)
+    )
     feature_dim = len(feature_cols) + 5
     actor, critic = build_actor_critic(
-        seq_len, feature_dim, num_actions=NUM_ACTIONS, backbone_weights=backbone_weights
+        seq_len,
+        feature_dim,
+        num_actions=num_actions,
+        units_per_layer=units_per_layer,
+        dropout=dropout,
+        backbone_weights=backbone_weights,
     )
     teacher_backbone = build_backbone(
-        seq_len, feature_dim, units_per_layer=UNITS_PER_LAYER, dropout=DROPOUT
+        seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
     )
-    teacher = build_head(teacher_backbone, NUM_ACTIONS)
+    teacher = build_head(teacher_backbone, num_actions)
     teacher.load_weights(teacher_weights)
     teacher.trainable = False
 
-    actor_opt = keras.optimizers.Adam(3e-4)
-    critic_opt = keras.optimizers.Adam(1e-3)
+    actor_opt = keras.optimizers.Adam(actor_lr)
+    critic_opt = keras.optimizers.Adam(critic_lr)
     os.makedirs(save_path, exist_ok=True)
-    writer = tf.summary.create_file_writer(os.path.join(save_path, "logs"))
 
     kl_coef = teacher_kl
     best_profit = -np.inf
     best_actor_path = os.path.join(save_path, "actor_best.h5")
     best_critic_path = os.path.join(save_path, "critic_best.h5")
 
-    val_env = BacktestEnv(val_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats)
+    val_env = BacktestEnv(
+        val_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats
+    )
+    train_log: List[Dict[str, float]] = []
+    val_log: List[Dict[str, float]] = []
+
     for step in range(updates):
         traj = collect_trajectories(
             train_df,
@@ -416,6 +470,7 @@ def train(
             n_env=n_env,
             rollout=rollout,
             seq_len=seq_len,
+            num_actions=num_actions,
         )
         kl_coef, metrics = ppo_update(
             actor,
@@ -423,37 +478,47 @@ def train(
             traj,
             actor_opt,
             critic_opt,
+            num_actions=num_actions,
+            clip_ratio=clip_ratio,
+            c1=c1,
+            c2=c2,
+            epochs=epochs,
+            batch_size=batch_size,
             teacher=teacher,
             kl_coef=kl_coef,
             kl_decay=kl_decay,
+            max_grad_norm=max_grad_norm,
+            target_kl=target_kl,
         )
         avg_ret = float(np.mean(traj.returns))
-        profit = evaluate_profit(val_env, actor, seq_len, feature_dim)
-        if profit > best_profit:
-            best_profit = profit
-            actor.save_weights(best_actor_path)
-            critic.save_weights(best_critic_path)
-        print(
-            f"update={step} avg_reward={avg_ret:.3f} profit={profit:.3f} kl_coef={kl_coef:.4f}"
-        )
-        with writer.as_default():
-            tf.summary.scalar("avg_return", avg_ret, step=step)
-            tf.summary.scalar("profit", profit, step=step)
-            for k, v in metrics.items():
-                tf.summary.scalar(k, v, step=step)
-    writer.flush()
+        metrics["avg_return"] = avg_ret
+        train_log.append(metrics)
+
+        if (step + 1) % val_interval == 0:
+            val_metrics = evaluate_profit(val_env, actor, seq_len, feature_dim)
+            val_log.append(val_metrics)
+            profit = val_metrics.get("Equity", 0.0)
+            if profit > best_profit:
+                best_profit = profit
+                actor.save_weights(best_actor_path)
+                critic.save_weights(best_critic_path)
+            print(
+                f"update={step} avg_reward={avg_ret:.3f} profit={profit:.3f} kl_coef={kl_coef:.4f}"
+            )
 
     actor.save_weights(os.path.join(save_path, "actor.h5"))
     critic.save_weights(os.path.join(save_path, "critic.h5"))
     actor.load_weights(best_actor_path)
     critic.load_weights(best_critic_path)
 
-    test_env = BacktestEnv(test_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats)
+    test_env = BacktestEnv(
+        test_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats
+    )
     evaluate_profit(test_env, actor, seq_len, feature_dim)
     fig = test_env.plot("PPO inference")
     os.makedirs("results", exist_ok=True)
     fig.savefig(os.path.join("results", "ppo_inference.png"))
-    return actor, critic
+    return actor, critic, train_log, val_log
 
 
 __all__ = [
@@ -462,4 +527,5 @@ __all__ = [
     "collect_trajectories",
     "ppo_update",
     "train",
+    "evaluate_profit",
 ]
