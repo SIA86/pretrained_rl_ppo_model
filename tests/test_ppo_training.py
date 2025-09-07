@@ -18,7 +18,7 @@ from scr.residual_lstm import build_backbone, build_head, VERY_NEG
 
 
 def make_df():
-    return pd.DataFrame({"close": np.ones(20), "feat": np.zeros(20)})
+    return pd.DataFrame({"Close": np.ones(20), "feat": np.zeros(20)})
 
 
 def make_cfg():

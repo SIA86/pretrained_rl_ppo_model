@@ -84,10 +84,10 @@ def prepare_datasets(
 ]:
     """Разбить ``df`` на Train/Val/Test и нормализовать признаки."""
 
-    close = df["close"].to_numpy(np.float32)
-    feats, feature_cols = extract_features(df, drop_cols=["close"])
+    close = df["Close"].to_numpy(np.float32)
+    feats, feature_cols = extract_features(df, drop_cols=["Close"])
     df = pd.DataFrame(feats, columns=feature_cols)
-    df["close"] = close
+    df["Close"] = close
 
     assert abs(sum(splits) - 1.0) < 1e-8
     n = len(df)
@@ -109,7 +109,9 @@ def prepare_datasets(
 
     # Используем временную среду для оценки статистик состояния
     cfg = DEFAULT_CONFIG._replace(max_steps=len(train_df) - 1)
-    tmp_env = BacktestEnv(train_df, feature_cols=feature_cols, cfg=cfg)
+    tmp_env = BacktestEnv(
+        train_df, feature_cols=feature_cols, price_col="Close", cfg=cfg
+    )
     states: List[np.ndarray] = []
     obs = tmp_env.reset()
     states.append(obs["state"])
@@ -153,7 +155,11 @@ def collect_trajectories(
         s = int(np.random.choice(starts))
         window_df = train_df.iloc[s : s + L].reset_index(drop=True)
         env = BacktestEnv(
-            window_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats
+            window_df,
+            feature_cols=feature_cols,
+            price_col="Close",
+            cfg=cfg,
+            state_stats=state_stats,
         )
         obs = env.reset()
         hist = [obs["state"]]
@@ -182,6 +188,7 @@ def collect_trajectories(
                 env = BacktestEnv(
                     window_df,
                     feature_cols=feature_cols,
+                    price_col="Close",
                     cfg=cfg,
                     state_stats=state_stats,
                 )
@@ -441,10 +448,10 @@ def evaluate_profit(
             )
         if done:
             break
-    metrics = {
-        line.split(":")[0]: float(line.split(":")[1])
-        for line in env.metrics_report().splitlines()
-    }
+    metrics = {}
+    for line in env.metrics_report().splitlines():
+        key, val = line.split(":")
+        metrics[key] = float(val.strip().rstrip("%"))
     metrics["Equity"] = float(env.equity)
     if debug:
         logger.debug("evaluate_profit metrics=%s", metrics)
@@ -514,11 +521,15 @@ def train(
     # Инициализируем коэффициент KL и параметры ранней остановки
     kl_coef = teacher_kl
     best_profit = -np.inf
-    best_actor_path = os.path.join(save_path, "actor_best.h5")
-    best_critic_path = os.path.join(save_path, "critic_best.h5")
+    best_actor_path = os.path.join(save_path, "actor_best.weights.h5")
+    best_critic_path = os.path.join(save_path, "critic_best.weights.h5")
 
     val_env = BacktestEnv(
-        val_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats
+        val_df,
+        feature_cols=feature_cols,
+        price_col="Close",
+        cfg=cfg,
+        state_stats=state_stats,
     )
     train_log: List[Dict[str, float]] = []
     val_log: List[Dict[str, float]] = []
@@ -580,14 +591,18 @@ def train(
                 f"update={step} avg_reward={avg_ret:.3f} profit={profit:.3f} kl_coef={kl_coef:.4f}"
             )
 
-    actor.save_weights(os.path.join(save_path, "actor.h5"))
-    critic.save_weights(os.path.join(save_path, "critic.h5"))
+    actor.save_weights(os.path.join(save_path, "actor.weights.h5"))
+    critic.save_weights(os.path.join(save_path, "critic.weights.h5"))
     actor.load_weights(best_actor_path)
     critic.load_weights(best_critic_path)
 
     # Финальная оценка на тестовой выборке и сохранение графика
     test_env = BacktestEnv(
-        test_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats
+        test_df,
+        feature_cols=feature_cols,
+        price_col="Close",
+        cfg=cfg,
+        state_stats=state_stats,
     )
     evaluate_profit(test_env, actor, seq_len, feature_dim, debug=debug)
     fig = test_env.plot("PPO inference")
