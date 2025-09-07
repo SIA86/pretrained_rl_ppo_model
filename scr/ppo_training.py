@@ -18,7 +18,7 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow import keras
 
-from .backtest_env import BacktestEnv, EnvConfig, DEFAULT_CONFIG
+from .backtest_env import BacktestEnv, EnvConfig
 from .dataset_builder import extract_features
 from .normalisation import NormalizationStats
 from .residual_lstm import (
@@ -80,7 +80,6 @@ def prepare_datasets(
     pd.DataFrame,
     List[str],
     NormalizationStats,
-    NormalizationStats,
 ]:
     """Разбить ``df`` на Train/Val/Test и нормализовать признаки."""
 
@@ -107,23 +106,7 @@ def prepare_datasets(
             part[feature_cols].to_numpy(np.float32)
         )
 
-    # Используем временную среду для оценки статистик состояния
-    cfg = DEFAULT_CONFIG._replace(max_steps=len(train_df) - 1)
-    tmp_env = BacktestEnv(
-        train_df, feature_cols=feature_cols, price_col="Close", cfg=cfg
-    )
-    states: List[np.ndarray] = []
-    obs = tmp_env.reset()
-    states.append(obs["state"])
-    for _ in range(cfg.max_steps):
-        obs, _, done, _ = tmp_env.step(3)
-        states.append(obs["state"])
-        if done:
-            break
-
-    # # TODO: зачем нормализация account_features? зачем они вообще тут?
-    state_stats = NormalizationStats().fit(np.array(states, dtype=np.float32))
-    return train_df, val_df, test_df, feature_cols, feat_stats, state_stats
+    return train_df, val_df, test_df, feature_cols, feat_stats
 
 
 def collect_trajectories(
@@ -132,7 +115,6 @@ def collect_trajectories(
     critic: keras.Model,
     cfg: EnvConfig,
     feature_cols: List[str],
-    state_stats: NormalizationStats,
     n_env: int,
     rollout: int,
     seq_len: int,
@@ -161,7 +143,6 @@ def collect_trajectories(
             feature_cols=feature_cols,
             price_col="Close",
             cfg=cfg,
-            state_stats=state_stats,
         )
         obs = env.reset()
         hist = [obs["state"]]
@@ -192,7 +173,6 @@ def collect_trajectories(
                     feature_cols=feature_cols,
                     price_col="Close",
                     cfg=cfg,
-                    state_stats=state_stats,
                 )
                 obs = env.reset()
                 hist = [obs["state"]]
@@ -464,6 +444,7 @@ def train(
     df: pd.DataFrame,
     cfg: EnvConfig,
     *,
+    feature_dim: int,
     seq_len: int,
     teacher_weights: str,
     backbone_weights: str,
@@ -491,10 +472,7 @@ def train(
     """Основной цикл обучения PPO поверх табличных данных."""
 
     # Подготавливаем данные и вычисляем статистики нормализации
-    train_df, val_df, test_df, feature_cols, _feat_stats, state_stats = (
-        prepare_datasets(df)
-    )
-    feature_dim = len(feature_cols) + 5 # TODO: убрать хардкод
+    train_df, val_df, test_df, feature_cols, _feat_stats = prepare_datasets(df)
     # Создаём модели актёра и критика
     actor, critic = build_actor_critic(
         seq_len,
@@ -531,7 +509,6 @@ def train(
         feature_cols=feature_cols,
         price_col="Close",
         cfg=cfg,
-        state_stats=state_stats,
     )
     train_log: List[Dict[str, float]] = []
     val_log: List[Dict[str, float]] = []
@@ -544,7 +521,6 @@ def train(
             critic,
             cfg,
             feature_cols,
-            state_stats,
             n_env=n_env,
             rollout=rollout,
             seq_len=seq_len,
@@ -604,7 +580,6 @@ def train(
         feature_cols=feature_cols,
         price_col="Close",
         cfg=cfg,
-        state_stats=state_stats,
     )
     evaluate_profit(test_env, actor, seq_len, feature_dim, debug=debug)
     fig = test_env.plot("PPO inference")
