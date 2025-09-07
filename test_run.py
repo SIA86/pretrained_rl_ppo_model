@@ -47,9 +47,9 @@ def main() -> None:
         epochs=1,
         steps_per_epoch=1,
         lr=1e-3,
-        best_path="best_lstm.weights.h5",
+        best_path="sl_weights/best_lstm.weights.h5",
     )
-
+    backbone.save_weights("sl_weights/best_backbone.weights.h5")
     calibrate_model(model, ds_va, plot=False, batch_size=32, save_dir=".")
 
     idx = splits["test"][-1]
@@ -68,35 +68,33 @@ def main() -> None:
     print(env.metrics_report())
 
     cfg = DEFAULT_CONFIG._replace(max_steps=10)
-    try:
-        ppo_train(
-            df,
-            cfg,
-            seq_len=5,
-            teacher_weights="best_lstm.weights.h5",
-            backbone_weights="best_lstm.weights.h5",
-            save_path="ppo_weights",
-            num_actions=4,
-            units_per_layer=[8],
-            dropout=0.1,
-            updates=1,
-            n_env=1,
-            rollout=1,
-            actor_lr=1e-3,
-            critic_lr=1e-3,
-            clip_ratio=0.2,
-            c1=0.5,
-            c2=0.01,
-            epochs=1,
-            batch_size=1,
-            teacher_kl=0.1,
-            kl_decay=0.5,
-            max_grad_norm=0.5,
-            target_kl=0.01,
-            val_interval=1,
-        )
-    except Exception as exc:
-        print(f"PPO training skipped: {exc}")
+    df_ppo = df.drop(columns=["Pos", "un_pnl", "flat_steps", "hold_steps", "drawdown"])
+    ppo_train(
+        df_ppo,
+        cfg,
+        seq_len=5,
+        teacher_weights="sl_weights/best_lstm.weights.h5",
+        backbone_weights="sl_weights/best_backbone.weights.h5",
+        save_path="ppo_weights",
+        num_actions=4,
+        units_per_layer=[8, 8],
+        dropout=0.2,
+        updates=1,
+        n_env=1,
+        rollout=1,
+        actor_lr=1e-3,
+        critic_lr=1e-3,
+        clip_ratio=0.2,
+        c1=0.5,
+        c2=0.01,
+        epochs=1,
+        batch_size=1,
+        teacher_kl=0.1,
+        kl_decay=0.5,
+        max_grad_norm=0.5,
+        target_kl=0.01,
+        val_interval=1,
+    )
     print("PPO training completed")
 
 

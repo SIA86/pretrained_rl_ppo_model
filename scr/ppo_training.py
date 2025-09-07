@@ -448,10 +448,10 @@ def evaluate_profit(
             )
         if done:
             break
-    metrics = {
-        line.split(":")[0]: float(line.split(":")[1])
-        for line in env.metrics_report().splitlines()
-    }
+    metrics = {}
+    for line in env.metrics_report().splitlines():
+        key, val = line.split(":")
+        metrics[key] = float(val.strip().rstrip("%"))
     metrics["Equity"] = float(env.equity)
     if debug:
         logger.debug("evaluate_profit metrics=%s", metrics)
@@ -521,8 +521,8 @@ def train(
     # Инициализируем коэффициент KL и параметры ранней остановки
     kl_coef = teacher_kl
     best_profit = -np.inf
-    best_actor_path = os.path.join(save_path, "actor_best.h5")
-    best_critic_path = os.path.join(save_path, "critic_best.h5")
+    best_actor_path = os.path.join(save_path, "actor_best.weights.h5")
+    best_critic_path = os.path.join(save_path, "critic_best.weights.h5")
 
     val_env = BacktestEnv(
         val_df,
@@ -591,8 +591,8 @@ def train(
                 f"update={step} avg_reward={avg_ret:.3f} profit={profit:.3f} kl_coef={kl_coef:.4f}"
             )
 
-    actor.save_weights(os.path.join(save_path, "actor.h5"))
-    critic.save_weights(os.path.join(save_path, "critic.h5"))
+    actor.save_weights(os.path.join(save_path, "actor.weights.h5"))
+    critic.save_weights(os.path.join(save_path, "critic.weights.h5"))
     actor.load_weights(best_actor_path)
     critic.load_weights(best_critic_path)
 
