@@ -43,15 +43,19 @@ def build_actor_critic(
     """Создать сети актёра и критика с общей архитектурой и опциональной загрузкой бэкбона."""
 
     # Создаём две независимые копии бэкбона для актёра и критика
-    backbone = build_backbone(
+    actor_backbone = build_backbone(
+        seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
+    )
+    critic_backbone = build_backbone(
         seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
     )
     # При необходимости загружаем предобученные веса бэкбона
     if backbone_weights:
-        backbone.load_weights(backbone_weights)
+        actor_backbone.load_weights(backbone_weights)
+        critic_backbone.load_weights(backbone_weights)
     # На выход бэкбона навешиваются головы актёра и критика
-    actor = build_head(backbone, num_actions)
-    critic = build_head(backbone, 1)
+    actor = build_head(actor_backbone, num_actions)
+    critic = build_head(critic_backbone, 1)
     return actor, critic
 
 
