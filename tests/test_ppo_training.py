@@ -37,7 +37,7 @@ def make_cfg():
 
 def test_build_and_collect():
     df = make_df()
-    train_df, _, _, feat_cols, _, state_stats = prepare_datasets(df)
+    train_df, _, _, feat_cols, _ = prepare_datasets(df)
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
@@ -50,7 +50,6 @@ def test_build_and_collect():
         critic,
         cfg,
         feat_cols,
-        state_stats,
         n_env=2,
         rollout=2,
         seq_len=seq_len,
@@ -64,7 +63,7 @@ def test_build_and_collect():
 
 def test_ppo_update_kl_decay():
     df = make_df()
-    train_df, _, _, feat_cols, _, state_stats = prepare_datasets(df)
+    train_df, _, _, feat_cols, _ = prepare_datasets(df)
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
@@ -79,7 +78,6 @@ def test_ppo_update_kl_decay():
         critic,
         cfg,
         feat_cols,
-        state_stats,
         n_env=1,
         rollout=2,
         seq_len=seq_len,
@@ -117,7 +115,7 @@ def test_collect_trajectories_nan_probs():
             )
 
     df = make_df()
-    train_df, _, _, feat_cols, _, state_stats = prepare_datasets(df)
+    train_df, _, _, feat_cols, _ = prepare_datasets(df)
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
@@ -134,7 +132,6 @@ def test_collect_trajectories_nan_probs():
         critic,
         cfg,
         feat_cols,
-        state_stats,
         n_env=1,
         rollout=1,
         seq_len=seq_len,

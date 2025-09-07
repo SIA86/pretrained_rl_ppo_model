@@ -69,9 +69,11 @@ def main() -> None:
 
     cfg = DEFAULT_CONFIG._replace(max_steps=10)
     df_ppo = df.drop(columns=["Pos", "un_pnl", "flat_steps", "hold_steps", "drawdown"])
+    feature_dim = len(builder.feature_names) + 5
     ppo_train(
         df_ppo,
         cfg,
+        feature_dim=feature_dim,
         seq_len=5,
         teacher_weights="sl_weights/best_lstm.weights.h5",
         backbone_weights="sl_weights/best_backbone.weights.h5",
