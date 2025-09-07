@@ -50,7 +50,6 @@ def main() -> None:
         best_path="sl_weights/best_lstm.weights.h5",
     )
     backbone.save_weights("sl_weights/best_backbone.weights.h5")
-
     calibrate_model(model, ds_va, plot=False, batch_size=32, save_dir=".")
 
     idx = splits["test"][-1]
