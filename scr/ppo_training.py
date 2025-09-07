@@ -84,10 +84,10 @@ def prepare_datasets(
 ]:
     """Разбить ``df`` на Train/Val/Test и нормализовать признаки."""
 
-    close = df["close"].to_numpy(np.float32)
-    feats, feature_cols = extract_features(df, drop_cols=["close"])
+    close = df["Close"].to_numpy(np.float32)
+    feats, feature_cols = extract_features(df, drop_cols=["Close"])
     df = pd.DataFrame(feats, columns=feature_cols)
-    df["close"] = close
+    df["Close"] = close
 
     assert abs(sum(splits) - 1.0) < 1e-8
     n = len(df)
@@ -109,7 +109,9 @@ def prepare_datasets(
 
     # Используем временную среду для оценки статистик состояния
     cfg = DEFAULT_CONFIG._replace(max_steps=len(train_df) - 1)
-    tmp_env = BacktestEnv(train_df, feature_cols=feature_cols, cfg=cfg)
+    tmp_env = BacktestEnv(
+        train_df, feature_cols=feature_cols, price_col="Close", cfg=cfg
+    )
     states: List[np.ndarray] = []
     obs = tmp_env.reset()
     states.append(obs["state"])
@@ -153,7 +155,11 @@ def collect_trajectories(
         s = int(np.random.choice(starts))
         window_df = train_df.iloc[s : s + L].reset_index(drop=True)
         env = BacktestEnv(
-            window_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats
+            window_df,
+            feature_cols=feature_cols,
+            price_col="Close",
+            cfg=cfg,
+            state_stats=state_stats,
         )
         obs = env.reset()
         hist = [obs["state"]]
@@ -182,6 +188,7 @@ def collect_trajectories(
                 env = BacktestEnv(
                     window_df,
                     feature_cols=feature_cols,
+                    price_col="Close",
                     cfg=cfg,
                     state_stats=state_stats,
                 )
@@ -518,7 +525,11 @@ def train(
     best_critic_path = os.path.join(save_path, "critic_best.h5")
 
     val_env = BacktestEnv(
-        val_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats
+        val_df,
+        feature_cols=feature_cols,
+        price_col="Close",
+        cfg=cfg,
+        state_stats=state_stats,
     )
     train_log: List[Dict[str, float]] = []
     val_log: List[Dict[str, float]] = []
@@ -587,7 +598,11 @@ def train(
 
     # Финальная оценка на тестовой выборке и сохранение графика
     test_env = BacktestEnv(
-        test_df, feature_cols=feature_cols, cfg=cfg, state_stats=state_stats
+        test_df,
+        feature_cols=feature_cols,
+        price_col="Close",
+        cfg=cfg,
+        state_stats=state_stats,
     )
     evaluate_profit(test_env, actor, seq_len, feature_dim, debug=debug)
     fig = test_env.plot("PPO inference")
