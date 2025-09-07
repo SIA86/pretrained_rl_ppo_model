@@ -80,7 +80,6 @@ def optimize_hyperparameters(
             early_stopping_patience=1,
             lr_mode=None,
             best_path="best_lstm.weights.h5",
-            backbone=backbone,
             backbone_path="best_backbone.weights.h5",
         )
 
