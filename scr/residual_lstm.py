@@ -43,7 +43,12 @@ def build_backbone(
                 x = layers.Add(name=f"{prefix}_res_add_{i}")([proj, h])
             in_dim = units
         last = layers.Lambda(lambda t: t[:, -1, :], name=f"{prefix}_last")(x)
-        last = layers.LayerNormalization(epsilon=ln_eps, name=f"{prefix}_ln_head")(last)
+        last = layers.LayerNormalization(
+            epsilon=ln_eps,
+            center=False,
+            scale=False,
+            name=f"{prefix}_ln_head",
+        )(last)
         last = layers.Dropout(dropout, name=f"{prefix}_do_head")(last)
         return last
 
