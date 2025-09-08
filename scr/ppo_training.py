@@ -430,11 +430,7 @@ def evaluate_profit(
             )
         if done:
             break
-    metrics = {}
-    for line in env.metrics_report().splitlines():
-        key, val = line.split(":")
-        metrics[key] = float(val.strip().rstrip("%"))
-    metrics["Equity"] = float(env.equity)
+    metrics = env.metrics_report()
     if debug:
         logger.debug("evaluate_profit metrics=%s", metrics)
     return metrics
