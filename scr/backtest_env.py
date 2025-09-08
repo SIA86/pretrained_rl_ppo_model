@@ -595,21 +595,20 @@ class BacktestEnv:
         time_under_water = float((equity_curve < run_max).sum() / len(equity_curve))
 
         return {
-            "Equity": float(equity),
-            "Realized PnL": float(realized_pnl),
+            "Realized PnL": float(round(realized_pnl, 4)),
+            "Annual Return": float(round(ann_return, 4)),
+            "Sharpe Ratio": float(round(sharpe, 4)),
+            "Sortino Ratio": float(round(sortino, 4)),
             "Closed trades": int(n_trades),
-            "Avg PnL per trade": float(avg_pnl),
-            "Return": float(ann_return),
-            "Sharpe Ratio": float(sharpe),
-            "Sortino Ratio": float(sortino),
-            "Maximum Drawdown": float(max_drawdown),
-            "Calmar Ratio": float(calmar),
-            "Profit Factor": float(profit_factor),
-            "Win Rate": float(win_rate),
-            "Average Win/Loss Ratio": float(avg_win_loss),
-            "Recovery Factor": float(recovery_factor),
-            "Time Under Water": float(time_under_water),
-            "Value at Risk": float(var_95),
+            "Avg PnL per trade": float(round(avg_pnl, 4)),
+            "Maximum Drawdown": float(round(max_drawdown, 4)),
+            "Calmar Ratio": float(round(calmar, 4)),
+            "Profit Factor": float(round(profit_factor, 4)),
+            "Win Rate": float(round(win_rate, 4)),
+            "Average Win/Loss Ratio": float(round(avg_win_loss, 4)),
+            "Recovery Factor": float(round(recovery_factor, 4)),
+            "Time Under Water": float(round(time_under_water, 4)),
+            "Value at Risk": float(round(var_95, 4)),
         }
 
 
