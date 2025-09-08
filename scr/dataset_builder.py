@@ -402,7 +402,7 @@ class DatasetBuilderForYourColumns:
     def fit_transform(self, df: pd.DataFrame, return_indices: bool = False):
         X = df[self.feature_cols].to_numpy(np.float32)
         A = df[self.account_cols].to_numpy(np.float32)
-        A[:] = 0
+        A[:] = 0 # заменяем все на нули, чтобы не подсказывать на обучении
         if self.drop_cols:
             X = df[
                 [c for c in self.feature_cols if c not in set(self.drop_cols)]

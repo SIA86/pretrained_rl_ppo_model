@@ -71,30 +71,23 @@ class Trajectory:
 
 def prepare_datasets(
     df: pd.DataFrame,
-    *,
+    feature_cols: List[str],
     splits: Tuple[float, float, float] = (0.8, 0.1, 0.1),
     norm_kind: str = "zscore",
 ) -> Tuple[
     pd.DataFrame,
     pd.DataFrame,
     pd.DataFrame,
-    List[str],
     NormalizationStats,
 ]:
     """Разбить ``df`` на Train/Val/Test и нормализовать признаки."""
-
-    close = df["Close"].to_numpy(np.float32)
-    feats, feature_cols = extract_features(df, drop_cols=["Close"])
-    df = pd.DataFrame(feats, columns=feature_cols)
-    df["Close"] = close
-
     assert abs(sum(splits) - 1.0) < 1e-8
     n = len(df)
     s1 = int(n * splits[0])
     s2 = int(n * (splits[0] + splits[1]))
-    train_df = df.iloc[:s1].reset_index(drop=True).copy()
-    val_df = df.iloc[s1:s2].reset_index(drop=True).copy()
-    test_df = df.iloc[s2:].reset_index(drop=True).copy()
+    train_df = df[feature_cols].iloc[:s1].reset_index(drop=True).copy()
+    val_df = df[feature_cols].iloc[s1:s2].reset_index(drop=True).copy()
+    test_df = df[feature_cols].iloc[s2:].reset_index(drop=True).copy()
 
     # Считаем статистики нормализации по тренировочной части
     feat_stats = NormalizationStats(kind=norm_kind).fit(
@@ -106,7 +99,7 @@ def prepare_datasets(
             part[feature_cols].to_numpy(np.float32)
         )
 
-    return train_df, val_df, test_df, feature_cols, feat_stats
+    return train_df, val_df, test_df, feat_stats
 
 
 def collect_trajectories(
@@ -141,8 +134,9 @@ def collect_trajectories(
         env = BacktestEnv(
             window_df,
             feature_cols=feature_cols,
-            price_col="Close",
+            price_col="Open",
             cfg=cfg,
+            ppo_true=True
         )
         obs = env.reset()
         hist = [obs["state"]]
@@ -171,8 +165,9 @@ def collect_trajectories(
                 env = BacktestEnv(
                     window_df,
                     feature_cols=feature_cols,
-                    price_col="Close",
+                    price_col="Open",
                     cfg=cfg,
+                    ppo_true=True
                 )
                 obs = env.reset()
                 hist = [obs["state"]]
@@ -437,10 +432,12 @@ def evaluate_profit(
 
 
 def train(
-    df: pd.DataFrame,
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
     cfg: EnvConfig,
-    *,
     feature_dim: int,
+    feature_cols: List[str],
     seq_len: int,
     teacher_weights: str,
     backbone_weights: str,
@@ -466,9 +463,15 @@ def train(
     debug: bool = False,
 ) -> Tuple[keras.Model, keras.Model, List[Dict[str, float]], List[Dict[str, float]]]:
     """Основной цикл обучения PPO поверх табличных данных."""
+    # создаем среду для валидации и инфереса feature_dim
+    val_env = BacktestEnv(
+        val_df,
+        feature_cols=feature_cols,
+        price_col="Open",
+        cfg=cfg,
+        ppo_true=True
+    )
 
-    # Подготавливаем данные и вычисляем статистики нормализации
-    train_df, val_df, test_df, feature_cols, _feat_stats = prepare_datasets(df)
     # Создаём модели актёра и критика
     actor, critic = build_actor_critic(
         seq_len,
@@ -500,12 +503,7 @@ def train(
     best_actor_path = os.path.join(save_path, "actor_best.weights.h5")
     best_critic_path = os.path.join(save_path, "critic_best.weights.h5")
 
-    val_env = BacktestEnv(
-        val_df,
-        feature_cols=feature_cols,
-        price_col="Close",
-        cfg=cfg,
-    )
+
     train_log: List[Dict[str, float]] = []
     val_log: List[Dict[str, float]] = []
 
