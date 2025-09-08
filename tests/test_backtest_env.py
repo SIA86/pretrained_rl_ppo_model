@@ -55,21 +55,13 @@ def test_equity_realized_with_fee_short():
     assert last["realized_pnl"] == pytest.approx(0.2)
 
 
-def parse_report(report: str) -> dict:
-    result = {}
-    for line in report.splitlines():
-        name, value = line.split(": ")
-        result[name] = value
-    return result
-
-
 def test_metrics_report():
     env = make_env([1, 2, 3, 4, 1])
     run_actions(env, [0, 1, 0, 1])
-    metrics = parse_report(env.metrics_report())
-    assert float(metrics["Win rate"].rstrip("%")) == pytest.approx(50.0)
-    assert float(metrics["Profit factor"]) == pytest.approx(2 / 3, rel=1e-3)
-    assert float(metrics["Max drawdown"]) == pytest.approx(1.5)
+    metrics = env.metrics_report()
+    assert metrics["Win Rate"] == pytest.approx(50.0)
+    assert metrics["Profit Factor"] == pytest.approx(2 / 3, rel=1e-3)
+    assert metrics["Maximum Drawdown"] == pytest.approx(1.5)
 
 
 def test_time_penalty():

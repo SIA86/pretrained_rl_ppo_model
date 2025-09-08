@@ -218,8 +218,17 @@ class BacktestEnv:
             Статистика для нормализации вектора состояния портфеля.
         """
         self.ppo = ppo_true
+        orig_index = df.index
         # Сбрасываем индекс, чтобы шаги шли от 0
         self.df = df.reset_index(drop=True)
+        if isinstance(orig_index, pd.DatetimeIndex) and len(orig_index) > 1:
+            delta = orig_index[1] - orig_index[0]
+            if delta != pd.Timedelta(0):
+                self.periods_per_year = float(pd.Timedelta("365D") / delta)
+            else:
+                self.periods_per_year = 365.0
+        else:
+            self.periods_per_year = 365.0
         if feature_cols is None:
             # По умолчанию используем все числовые признаки, кроме цены
             feature_cols = [
@@ -538,66 +547,75 @@ class BacktestEnv:
         plt.tight_layout()
         return fig
 
-    def metrics_report(self) -> str:
-        """Сформировать отчёт по ключевым метрикам торговой истории.
-
-        Возвращает многострочную строку со следующими показателями:
-        equity, реализованный PnL, количество закрытых сделок, win rate,
-        средний PnL на сделку, profit factor, максимальная просадка и
-        коэффициент Шарпа.
-        """
+    def metrics_report(self) -> Dict[str, float]:
+        """Рассчитать набор метрик по торговой истории."""
         if not self.history:
-            return "История пуста, метрики недоступны."
+            return {}
 
         log = self.logs()
-        equity = log["equity"].iloc[-1]
+        equity_curve = log["equity"]
+        equity = equity_curve.iloc[-1]
         realized_pnl = log["realized_pnl"].iloc[-1]
+
+        returns = equity_curve.diff().dropna()
+        mean_ret = returns.mean() if not returns.empty else 0.0
+        std_ret = returns.std() if len(returns) > 1 else 0.0
+        if std_ret > 0:
+            sharpe = mean_ret / std_ret * np.sqrt(self.periods_per_year)
+        else:
+            sharpe = 0.0
+        downside = returns[returns < 0]
+        dn_std = downside.std() if len(downside) > 1 else 0.0
+        if dn_std > 0:
+            sortino = mean_ret / dn_std * np.sqrt(self.periods_per_year)
+        else:
+            sortino = 0.0
+        ann_return = mean_ret * self.periods_per_year
+        var_95 = -np.percentile(returns, 5) if len(returns) > 0 else 0.0
 
         trades = log[log["closed"]]
         n_trades = len(trades)
-        win_rate = (trades["pnl_trade"] > 0).mean() if n_trades else 0.0
+        win_rate = (trades["pnl_trade"] > 0).mean() * 100 if n_trades else 0.0
         avg_pnl = trades["pnl_trade"].mean() if n_trades else 0.0
-
         gross_profit = trades[trades["pnl_trade"] > 0]["pnl_trade"].sum()
         gross_loss = trades[trades["pnl_trade"] < 0]["pnl_trade"].sum()
         if gross_loss < 0:
             profit_factor = gross_profit / abs(gross_loss)
         else:
             profit_factor = np.inf if gross_profit > 0 else 0.0
+        avg_win = trades[trades["pnl_trade"] > 0]["pnl_trade"].mean()
+        avg_loss = trades[trades["pnl_trade"] < 0]["pnl_trade"].mean()
+        if avg_loss < 0:
+            avg_win_loss = avg_win / abs(avg_loss)
+        else:
+            avg_win_loss = np.inf if avg_win > 0 else 0.0
 
-        equity_curve = log["equity"]
         run_max = equity_curve.cummax()
         drawdown = (run_max - equity_curve) / run_max.replace(0, np.nan)
         max_drawdown = drawdown.max()
         if pd.isna(max_drawdown):
             max_drawdown = 0.0
+        calmar = ann_return / max_drawdown if max_drawdown != 0 else np.inf
+        recovery_factor = equity / max_drawdown if max_drawdown != 0 else np.inf
+        time_under_water = float((equity_curve < run_max).sum() / len(equity_curve))
 
-        returns = log["reward"]
-        if len(returns) > 1 and returns.std() > 0:
-            sharpe = (returns.mean() / returns.std()) * np.sqrt(len(returns))
-        else:
-            sharpe = 0.0
-
-        metrics = [
-            ("Equity", equity),
-            ("Realized PnL", realized_pnl),
-            ("Closed trades", n_trades),
-            ("Win rate", win_rate * 100),
-            ("Avg PnL per trade", avg_pnl),
-            ("Profit factor", profit_factor),
-            ("Max drawdown", max_drawdown),
-            ("Sharpe ratio", sharpe),
-        ]
-
-        lines = []
-        for name, value in metrics:
-            if name == "Win rate":
-                lines.append(f"{name}: {value:.2f}%")
-            elif isinstance(value, float):
-                lines.append(f"{name}: {value:.4f}")
-            else:
-                lines.append(f"{name}: {value}")
-        return "\n".join(lines)
+        return {
+            "Equity": float(equity),
+            "Realized PnL": float(realized_pnl),
+            "Closed trades": int(n_trades),
+            "Avg PnL per trade": float(avg_pnl),
+            "Return": float(ann_return),
+            "Sharpe Ratio": float(sharpe),
+            "Sortino Ratio": float(sortino),
+            "Maximum Drawdown": float(max_drawdown),
+            "Calmar Ratio": float(calmar),
+            "Profit Factor": float(profit_factor),
+            "Win Rate": float(win_rate),
+            "Average Win/Loss Ratio": float(avg_win_loss),
+            "Recovery Factor": float(recovery_factor),
+            "Time Under Water": float(time_under_water),
+            "Value at Risk": float(var_95),
+        }
 
 
 def run_backtest_with_logits(
