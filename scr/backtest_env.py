@@ -225,7 +225,7 @@ class BacktestEnv:
             feature_cols = [
                 c
                 for c in df.columns
-                if c != price_col and np.issubdtype(df[c].dtype, np.number)
+                if c != price_col and np.issubdtype(df[c].dtypes, np.number)
             ]
         # Массив признаков и цен для быстрого доступа
         self.features = self.df[feature_cols].to_numpy(dtype=np.float32)
