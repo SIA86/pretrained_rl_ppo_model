@@ -8,8 +8,8 @@ teacher‑модели с затухающим коэффициентом и р�
 
 from __future__ import annotations
 
-import logging
 import os
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -28,7 +28,6 @@ from .residual_lstm import (
     masked_logits_and_probs,
 )
 
-logger = logging.getLogger(__name__)
 
 
 def build_actor_critic(
@@ -102,6 +101,18 @@ def prepare_datasets(
     return train_df, val_df, test_df, feat_stats
 
 
+def _env_step(args: Tuple[BacktestEnv, int]) -> Tuple[BacktestEnv, Dict[str, np.ndarray], float, bool]:
+    """Помощник для параллельного шага среды.
+
+    Принимает пару (env, action), выполняет ``env.step(action)`` и возвращает
+    обновлённую среду, наблюдение, награду и флаг завершения.
+    """
+
+    env, action = args
+    next_obs, reward, done, _ = env.step(int(action))
+    return env, next_obs, reward, done
+
+
 def collect_trajectories(
     train_df: pd.DataFrame,
     actor: keras.Model,
@@ -115,13 +126,13 @@ def collect_trajectories(
     gamma: float = 0.99,
     lam: float = 0.95,
     debug: bool = False,
+    use_parallel: bool = False,
 ) -> Trajectory:
     """Собрать батч траекторий из ``n_env`` сред с пересэмплингом окон."""
-
     L = cfg.max_steps + 1
     if debug:
-        logger.debug(
-            "collect_trajectories: n_env=%d rollout=%d seq_len=%d", n_env, rollout, seq_len
+        print(
+            f"collect_trajectories: n_env={n_env} rollout={rollout} seq_len={seq_len}"
         )
     max_start = len(train_df) - L
     starts = np.arange(max_start + 1)
@@ -157,73 +168,166 @@ def collect_trajectories(
     mask_buf = [[] for _ in range(n_env)]
     done_buf = [[] for _ in range(n_env)]
 
-    for _ in range(rollout):
-        for i, env in enumerate(envs):
-            if env.done:
-                s = int(np.random.choice(starts))
-                window_df = train_df.iloc[s : s + L].reset_index(drop=True)
-                env = BacktestEnv(
-                    window_df,
-                    feature_cols=feature_cols,
-                    price_col="Open",
-                    cfg=cfg,
-                    ppo_true=True
-                )
-                obs = env.reset()
-                hist = [obs["state"]]
-                for _ in range(seq_len - 1):
-                    obs, _, done, _ = env.step(3)
-                    hist.append(obs["state"])
+    if use_parallel:
+        with ProcessPoolExecutor(max_workers=min(n_env, os.cpu_count() or 1)) as pool:
+            for _ in range(rollout):
+                feats: List[np.ndarray] = []
+                masks: List[np.ndarray] = []
+                actions: List[int] = []
+                logps: List[float] = []
+                values: List[float] = []
+                for i, env in enumerate(envs):
+                    if env.done:
+                        s = int(np.random.choice(starts))
+                        window_df = train_df.iloc[s : s + L].reset_index(drop=True)
+                        env = BacktestEnv(
+                            window_df,
+                            feature_cols=feature_cols,
+                            price_col="Open",
+                            cfg=cfg,
+                            ppo_true=True
+                        )
+                        obs = env.reset()
+                        hist = [obs["state"]]
+                        for _ in range(seq_len - 1):
+                            obs, _, done, _ = env.step(3)
+                            hist.append(obs["state"])
+                            if done:
+                                break
+                        envs[i] = env
+                        state_hists[i] = hist
+
+                    t = env.t
+                    window = env.features[t - seq_len + 1 : t + 1]
+                    state_window = np.stack(state_hists[i][t - seq_len + 1 : t + 1])
+                    feat = np.concatenate([window, state_window], axis=1)
+                    mask = env.action_mask()
+                    logits = actor(feat[None, ...], training=False)
+                    _, probs_tf = masked_logits_and_probs(logits, mask[None, :])
+                    probs = probs_tf.numpy()[0]
+                    if not np.isfinite(probs).all() or probs.sum() <= 0.0:
+                        valid_actions = np.flatnonzero(mask)
+                        probs = np.zeros(num_actions, dtype=np.float32)
+                        probs[valid_actions] = 1.0 / len(valid_actions)
+                    action = int(np.random.choice(num_actions, p=probs))
+                    logp = float(np.log(probs[action] + 1e-8))
+                    value = float(critic(feat[None, ...], training=False).numpy()[0, 0])
+                    feats.append(feat)
+                    masks.append(mask.astype(np.float32))
+                    actions.append(action)
+                    logps.append(logp)
+                    values.append(value)
+
+                results = list(pool.map(_env_step, zip(envs, actions)))
+                for i, (env, next_obs, reward, done) in enumerate(results):
+                    envs[i] = env
+                    state_hists[i].append(next_obs["state"])
                     if done:
-                        break
-                envs[i] = env
-                state_hists[i] = hist
+                        next_value = 0.0
+                    else:
+                        t2 = env.t
+                        window2 = env.features[t2 - seq_len + 1 : t2 + 1]
+                        state_window2 = np.stack(
+                            state_hists[i][t2 - seq_len + 1 : t2 + 1]
+                        )
+                        feat2 = np.concatenate([window2, state_window2], axis=1)
+                        next_value = float(
+                            critic(feat2[None, ...], training=False).numpy()[0, 0]
+                        )
 
-            t = env.t
-            window = env.features[t - seq_len + 1 : t + 1]
-            state_window = np.stack(state_hists[i][t - seq_len + 1 : t + 1])
-            feat = np.concatenate([window, state_window], axis=1)
-            mask = env.action_mask()
-            logits = actor(feat[None, ...], training=False)
-            _, probs_tf = masked_logits_and_probs(logits, mask[None, :])
-            probs = probs_tf.numpy()[0]
-            if not np.isfinite(probs).all() or probs.sum() <= 0.0:
-                valid_actions = np.flatnonzero(mask)
-                probs = np.zeros(num_actions, dtype=np.float32)
-                probs[valid_actions] = 1.0 / len(valid_actions)
-            action = int(np.random.choice(num_actions, p=probs))
-            logp = float(np.log(probs[action] + 1e-8))
-            value = float(critic(feat[None, ...], training=False).numpy()[0, 0])
-            next_obs, reward, done, _ = env.step(action)
-            state_hists[i].append(next_obs["state"])
-            if debug:
-                logger.debug(
-                    "env=%d t=%d action=%d reward=%.4f done=%s",
-                    i,
-                    env.t,
-                    action,
-                    reward,
-                    done,
-                )
-            if done:
-                next_value = 0.0
-            else:
-                t2 = env.t
-                window2 = env.features[t2 - seq_len + 1 : t2 + 1]
-                state_window2 = np.stack(state_hists[i][t2 - seq_len + 1 : t2 + 1])
-                feat2 = np.concatenate([window2, state_window2], axis=1)
-                next_value = float(
-                    critic(feat2[None, ...], training=False).numpy()[0, 0]
-                )
+                    obs_buf[i].append(feats[i])
+                    act_buf[i].append(actions[i])
+                    rew_buf[i].append(reward)
+                    val_buf[i].append(values[i])
+                    next_val_buf[i].append(next_value)
+                    logp_buf[i].append(logps[i])
+                    mask_buf[i].append(masks[i])
+                    done_buf[i].append(done)
 
-            obs_buf[i].append(feat)
-            act_buf[i].append(action)
-            rew_buf[i].append(reward)
-            val_buf[i].append(value)
-            next_val_buf[i].append(next_value)
-            logp_buf[i].append(logp)
-            mask_buf[i].append(mask.astype(np.float32))
-            done_buf[i].append(done)
+                    if done:
+                        s = int(np.random.choice(starts))
+                        window_df = train_df.iloc[s : s + L].reset_index(drop=True)
+                        env = BacktestEnv(
+                            window_df,
+                            feature_cols=feature_cols,
+                            price_col="Open",
+                            cfg=cfg,
+                            ppo_true=True
+                        )
+                        obs = env.reset()
+                        hist = [obs["state"]]
+                        for _ in range(seq_len - 1):
+                            obs, _, done, _ = env.step(3)
+                            hist.append(obs["state"])
+                            if done:
+                                break
+                        envs[i] = env
+                        state_hists[i] = hist
+    else:
+        for _ in range(rollout):
+            for i, env in enumerate(envs):
+                if env.done:
+                    s = int(np.random.choice(starts))
+                    window_df = train_df.iloc[s : s + L].reset_index(drop=True)
+                    env = BacktestEnv(
+                        window_df,
+                        feature_cols=feature_cols,
+                        price_col="Open",
+                        cfg=cfg,
+                        ppo_true=True
+                    )
+                    obs = env.reset()
+                    hist = [obs["state"]]
+                    for _ in range(seq_len - 1):
+                        obs, _, done, _ = env.step(3)
+                        hist.append(obs["state"])
+                        if done:
+                            break
+                    envs[i] = env
+                    state_hists[i] = hist
+
+                t = env.t
+                window = env.features[t - seq_len + 1 : t + 1]
+                state_window = np.stack(state_hists[i][t - seq_len + 1 : t + 1])
+                feat = np.concatenate([window, state_window], axis=1)
+                mask = env.action_mask()
+                logits = actor(feat[None, ...], training=False)
+                _, probs_tf = masked_logits_and_probs(logits, mask[None, :])
+                probs = probs_tf.numpy()[0]
+                if not np.isfinite(probs).all() or probs.sum() <= 0.0:
+                    valid_actions = np.flatnonzero(mask)
+                    probs = np.zeros(num_actions, dtype=np.float32)
+                    probs[valid_actions] = 1.0 / len(valid_actions)
+                action = int(np.random.choice(num_actions, p=probs))
+                logp = float(np.log(probs[action] + 1e-8))
+                value = float(critic(feat[None, ...], training=False).numpy()[0, 0])
+                next_obs, reward, done, _ = env.step(action)
+                state_hists[i].append(next_obs["state"])
+                if debug:
+                    print(
+                        f"env={i} t={env.t} action={action} reward={reward:.4f} done={done}"
+                    )
+                if done:
+                    next_value = 0.0
+                else:
+                    t2 = env.t
+                    window2 = env.features[t2 - seq_len + 1 : t2 + 1]
+                    state_window2 = np.stack(
+                        state_hists[i][t2 - seq_len + 1 : t2 + 1]
+                    )
+                    feat2 = np.concatenate([window2, state_window2], axis=1)
+                    next_value = float(
+                        critic(feat2[None, ...], training=False).numpy()[0, 0]
+                    )
+
+                obs_buf[i].append(feat)
+                act_buf[i].append(action)
+                rew_buf[i].append(reward)
+                val_buf[i].append(value)
+                next_val_buf[i].append(next_value)
+                logp_buf[i].append(logp)
+                mask_buf[i].append(mask.astype(np.float32))
+                done_buf[i].append(done)
 
     # Объединяем накопленные буферы в единые массивы батча
     obs_arr: List[np.ndarray] = []
@@ -260,6 +364,69 @@ def collect_trajectories(
         old_logp=np.concatenate(logp_arr, axis=0),
         masks=np.concatenate(mask_arr, axis=0),
     )
+
+
+@tf.function
+def _ppo_batch_update(
+    actor: keras.Model,
+    critic: keras.Model,
+    actor_opt: keras.optimizers.Optimizer,
+    critic_opt: keras.optimizers.Optimizer,
+    b_obs: tf.Tensor,
+    b_act: tf.Tensor,
+    b_adv: tf.Tensor,
+    b_ret: tf.Tensor,
+    b_old: tf.Tensor,
+    b_mask: tf.Tensor,
+    *,
+    num_actions: int,
+    clip_ratio: float,
+    c1: float,
+    c2: float,
+    teacher: Optional[keras.Model],
+    kl_coef: float,
+    max_grad_norm: Optional[float],
+):
+    with tf.GradientTape(persistent=True) as tape:
+        logits = actor(b_obs, training=True)
+        masked = apply_action_mask(logits, b_mask)
+        logp_all = tf.nn.log_softmax(masked, axis=-1)
+        logp_act = tf.reduce_sum(
+            tf.one_hot(b_act, num_actions) * logp_all, axis=-1
+        )
+        ratio = tf.exp(logp_act - b_old)
+        clipped = tf.clip_by_value(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio)
+        policy_loss = -tf.reduce_mean(tf.minimum(ratio * b_adv, clipped * b_adv))
+        entropy = -tf.reduce_mean(
+            tf.reduce_sum(tf.exp(logp_all) * logp_all, axis=-1)
+        )
+        value = critic(b_obs, training=True)[:, 0]
+        value_loss = tf.reduce_mean(tf.square(b_ret - value))
+        t_kl = tf.constant(0.0)
+        if teacher is not None and kl_coef > 0.0:
+            t_logits = teacher(b_obs, training=False)
+            t_masked = apply_action_mask(t_logits, b_mask)
+            t_logp = tf.nn.log_softmax(t_masked, axis=-1)
+            t_kl = tf.reduce_mean(
+                tf.reduce_sum(tf.exp(logp_all) * (logp_all - t_logp), axis=-1)
+            )
+            actor_loss = policy_loss + kl_coef * t_kl - c2 * entropy
+        else:
+            actor_loss = policy_loss - c2 * entropy
+        critic_loss = c1 * value_loss
+
+    a_grads = tape.gradient(actor_loss, actor.trainable_variables)
+    c_grads = tape.gradient(critic_loss, critic.trainable_variables)
+    if max_grad_norm is not None:
+        a_grads, _ = tf.clip_by_global_norm(a_grads, max_grad_norm)
+        c_grads, _ = tf.clip_by_global_norm(c_grads, max_grad_norm)
+    actor_opt.apply_gradients(zip(a_grads, actor.trainable_variables))
+    critic_opt.apply_gradients(zip(c_grads, critic.trainable_variables))
+    approx_kl = tf.reduce_mean(b_old - logp_act)
+    clipfrac = tf.reduce_mean(
+        tf.cast(tf.abs(ratio - 1.0) > clip_ratio, tf.float32)
+    )
+    return policy_loss, value_loss, entropy, t_kl, approx_kl, clipfrac
 
 
 def ppo_update(
@@ -305,74 +472,51 @@ def ppo_update(
     # Запускаем несколько эпох обучения на собранном батче
     for ep in range(epochs):
         if debug:
-            logger.debug("ppo_update: epoch %d/%d", ep + 1, epochs)
+            print(f"ppo_update: epoch {ep + 1}/{epochs}")
         for batch in dataset:
             b_obs, b_act, b_adv, b_ret, b_old, b_mask = batch
             b_adv = (b_adv - tf.reduce_mean(b_adv)) / (tf.math.reduce_std(b_adv) + 1e-8)
-
-            with tf.GradientTape(persistent=True) as tape:
-                # Прогоняем батч через актёра и критика
-                logits = actor(b_obs, training=True)
-                masked = apply_action_mask(logits, b_mask)
-                logp_all = tf.nn.log_softmax(masked, axis=-1)
-                logp_act = tf.reduce_sum(
-                    tf.one_hot(b_act, num_actions) * logp_all, axis=-1
-                )
-                # Вычисляем отношение новых и старых вероятностей и применяем клиппинг
-                ratio = tf.exp(logp_act - b_old)
-                clipped = tf.clip_by_value(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio)
-                policy_loss = -tf.reduce_mean(
-                    tf.minimum(ratio * b_adv, clipped * b_adv)
-                )
-
-                entropy = -tf.reduce_mean(
-                    tf.reduce_sum(tf.exp(logp_all) * logp_all, axis=-1)
-                )
-
-                value = critic(b_obs, training=True)[:, 0]
-                value_loss = tf.reduce_mean(tf.square(b_ret - value))
-                t_kl = tf.constant(0.0)
-                # Добавляем регуляризацию по teacher-модели, если она задана
-                if teacher is not None and kl_coef > 0.0:
-                    t_logits = teacher(b_obs, training=False)
-                    t_masked = apply_action_mask(t_logits, b_mask)
-                    t_logp = tf.nn.log_softmax(t_masked, axis=-1)
-                    t_kl = tf.reduce_mean(
-                        tf.reduce_sum(tf.exp(logp_all) * (logp_all - t_logp), axis=-1)
-                    )
-                    actor_loss = policy_loss + kl_coef * t_kl - c2 * entropy
-                else:
-                    actor_loss = policy_loss - c2 * entropy
-
-                critic_loss = c1 * value_loss
-
-            # Считаем градиенты и при необходимости клиппируем их
-            a_grads = tape.gradient(actor_loss, actor.trainable_variables)
-            c_grads = tape.gradient(critic_loss, critic.trainable_variables)
-            if max_grad_norm is not None:
-                a_grads, _ = tf.clip_by_global_norm(a_grads, max_grad_norm)
-                c_grads, _ = tf.clip_by_global_norm(c_grads, max_grad_norm)
-            actor_opt.apply_gradients(zip(a_grads, actor.trainable_variables))
-            critic_opt.apply_gradients(zip(c_grads, critic.trainable_variables))
+            (
+                policy_loss,
+                value_loss,
+                entropy,
+                t_kl,
+                approx_kl,
+                clipfrac,
+            ) = _ppo_batch_update(
+                actor,
+                critic,
+                actor_opt,
+                critic_opt,
+                b_obs,
+                b_act,
+                b_adv,
+                b_ret,
+                b_old,
+                b_mask,
+                num_actions=num_actions,
+                clip_ratio=clip_ratio,
+                c1=c1,
+                c2=c2,
+                teacher=teacher,
+                kl_coef=kl_coef,
+                max_grad_norm=max_grad_norm,
+            )
             pi_losses.append(float(policy_loss))
             v_losses.append(float(value_loss))
             entropies.append(float(entropy))
             teacher_kls.append(float(t_kl))
-            approx_kls.append(float(tf.reduce_mean(b_old - logp_act)))
-            clipfracs.append(
-                float(
-                    tf.reduce_mean(
-                        tf.cast(tf.abs(ratio - 1.0) > clip_ratio, tf.float32)
-                    )
-                )
-            )
+            approx_kls.append(float(approx_kl))
+            clipfracs.append(float(clipfrac))
             if debug:
-                logger.debug(
-                    "batch: policy_loss=%.5f value_loss=%.5f entropy=%.5f approx_kl=%.5f",
-                    float(policy_loss),
-                    float(value_loss),
-                    float(entropy),
-                    approx_kls[-1],
+                print(
+                    "batch: policy_loss=%.5f value_loss=%.5f entropy=%.5f approx_kl=%.5f"
+                    % (
+                        float(policy_loss),
+                        float(value_loss),
+                        float(entropy),
+                        approx_kls[-1],
+                    )
                 )
             if target_kl is not None and approx_kls[-1] > target_kl:
                 break
@@ -417,17 +561,15 @@ def evaluate_profit(
         obs, _, done, _ = env.step(action)
         state_hist.append(obs["state"])
         if debug:
-            logger.debug(
-                "evaluate_profit: t=%d action=%d equity=%.4f",
-                env.t,
-                action,
-                env.equity,
+            print(
+                "evaluate_profit: t=%d action=%d equity=%.4f"
+                % (env.t, action, env.equity)
             )
         if done:
             break
     metrics = env.metrics_report()
     if debug:
-        logger.debug("evaluate_profit metrics=%s", metrics)
+        print(f"evaluate_profit metrics={metrics}")
     return metrics
 
 
@@ -488,10 +630,7 @@ def train(
     teacher.load_weights(teacher_weights)
     teacher.trainable = False
     if debug:
-        logging.basicConfig(
-            level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s"
-        )
-        logger.debug("train: debug mode enabled")
+        print("train: debug mode enabled")
 
     actor_opt = keras.optimizers.Adam(actor_lr)
     critic_opt = keras.optimizers.Adam(critic_lr)
@@ -544,7 +683,7 @@ def train(
         metrics["avg_return"] = avg_ret
         train_log.append(metrics)
         if debug:
-            logger.debug("update=%d metrics=%s", step, metrics)
+            print(f"update={step} metrics={metrics}")
 
         # Периодически оцениваем политику на валидационном наборе
         if (step + 1) % val_interval == 0:
@@ -553,7 +692,7 @@ def train(
             )
             val_log.append(val_metrics)
             if debug:
-                logger.debug("validation metrics=%s", val_metrics)
+                print(f"validation metrics={val_metrics}")
             profit = val_metrics.get("Equity", 0.0)
             if profit > best_profit:
                 best_profit = profit

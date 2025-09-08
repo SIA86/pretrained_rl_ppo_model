@@ -18,7 +18,7 @@ from scr.residual_lstm import build_backbone, build_head, VERY_NEG
 
 
 def make_df():
-    return pd.DataFrame({"Close": np.ones(20), "feat": np.zeros(20)})
+    return pd.DataFrame({"Open": np.ones(20), "feat": np.zeros(20)})
 
 
 def make_cfg():
@@ -36,8 +36,8 @@ def make_cfg():
 
 
 def test_build_and_collect():
-    df = make_df()
-    train_df, _, _, feat_cols, _ = prepare_datasets(df)
+    train_df = make_df()
+    feat_cols = ["feat"]
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
@@ -61,9 +61,33 @@ def test_build_and_collect():
     assert traj.advantages.shape == (4,)
 
 
+def test_collect_trajectories_parallel():
+    train_df = make_df()
+    feat_cols = ["feat"]
+    cfg = make_cfg()
+    seq_len = 1
+    feature_dim = len(feat_cols) + 5
+    actor, critic = build_actor_critic(
+        seq_len, feature_dim, num_actions=4, units_per_layer=[64, 32], dropout=0.5
+    )
+    traj = collect_trajectories(
+        train_df,
+        actor,
+        critic,
+        cfg,
+        feat_cols,
+        n_env=2,
+        rollout=2,
+        seq_len=seq_len,
+        num_actions=4,
+        use_parallel=True,
+    )
+    assert traj.obs.shape == (4, seq_len, feature_dim)
+
+
 def test_ppo_update_kl_decay():
-    df = make_df()
-    train_df, _, _, feat_cols, _ = prepare_datasets(df)
+    train_df = make_df()
+    feat_cols = ["feat"]
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
@@ -114,8 +138,8 @@ def test_collect_trajectories_nan_probs():
                 [batch, 1],
             )
 
-    df = make_df()
-    train_df, _, _, feat_cols, _ = prepare_datasets(df)
+    train_df = make_df()
+    feat_cols = ["feat"]
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
