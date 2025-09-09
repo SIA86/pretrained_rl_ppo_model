@@ -8,7 +8,6 @@ teacher‑модели с затухающим коэффициентом и р�
 
 from __future__ import annotations
 
-import logging
 import os
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -29,7 +28,6 @@ from .residual_lstm import (
     masked_logits_and_probs,
 )
 
-logger = logging.getLogger(__name__)
 
 
 def build_actor_critic(
@@ -133,8 +131,8 @@ def collect_trajectories(
     """Собрать батч траекторий из ``n_env`` сред с пересэмплингом окон."""
     L = cfg.max_steps + 1
     if debug:
-        logger.debug(
-            "collect_trajectories: n_env=%d rollout=%d seq_len=%d", n_env, rollout, seq_len
+        print(
+            f"collect_trajectories: n_env={n_env} rollout={rollout} seq_len={seq_len}"
         )
     max_start = len(train_df) - L
     starts = np.arange(max_start + 1)
@@ -245,7 +243,6 @@ def collect_trajectories(
                     logp_buf[i].append(logps[i])
                     mask_buf[i].append(masks[i])
                     done_buf[i].append(done)
-
                     if done:
                         s = int(np.random.choice(starts))
                         window_df = train_df.iloc[s : s + L].reset_index(drop=True)
@@ -306,13 +303,8 @@ def collect_trajectories(
                 next_obs, reward, done, _ = env.step(action)
                 state_hists[i].append(next_obs["state"])
                 if debug:
-                    logger.debug(
-                        "env=%d t=%d action=%d reward=%.4f done=%s",
-                        i,
-                        env.t,
-                        action,
-                        reward,
-                        done,
+                    print(
+                        f"env={i} t={env.t} action={action} reward={reward:.4f} done={done}"
                     )
                 if done:
                     next_value = 0.0
@@ -479,7 +471,7 @@ def ppo_update(
     # Запускаем несколько эпох обучения на собранном батче
     for ep in range(epochs):
         if debug:
-            logger.debug("ppo_update: epoch %d/%d", ep + 1, epochs)
+            print(f"ppo_update: epoch {ep + 1}/{epochs}")
         for batch in dataset:
             b_obs, b_act, b_adv, b_ret, b_old, b_mask = batch
             b_adv = (b_adv - tf.reduce_mean(b_adv)) / (tf.math.reduce_std(b_adv) + 1e-8)
@@ -516,12 +508,14 @@ def ppo_update(
             approx_kls.append(float(approx_kl))
             clipfracs.append(float(clipfrac))
             if debug:
-                logger.debug(
-                    "batch: policy_loss=%.5f value_loss=%.5f entropy=%.5f approx_kl=%.5f",
-                    float(policy_loss),
-                    float(value_loss),
-                    float(entropy),
-                    approx_kls[-1],
+                print(
+                    "batch: policy_loss=%.5f value_loss=%.5f entropy=%.5f approx_kl=%.5f"
+                    % (
+                        float(policy_loss),
+                        float(value_loss),
+                        float(entropy),
+                        approx_kls[-1],
+                    )
                 )
             if target_kl is not None and approx_kls[-1] > target_kl:
                 break
@@ -566,17 +560,15 @@ def evaluate_profit(
         obs, _, done, _ = env.step(action)
         state_hist.append(obs["state"])
         if debug:
-            logger.debug(
-                "evaluate_profit: t=%d action=%d equity=%.4f",
-                env.t,
-                action,
-                env.equity,
+            print(
+                "evaluate_profit: t=%d action=%d equity=%.4f"
+                % (env.t, action, env.equity)
             )
         if done:
             break
     metrics = env.metrics_report()
     if debug:
-        logger.debug("evaluate_profit metrics=%s", metrics)
+        print(f"evaluate_profit metrics={metrics}")
     return metrics
 
 
@@ -637,10 +629,7 @@ def train(
     teacher.load_weights(teacher_weights)
     teacher.trainable = False
     if debug:
-        logging.basicConfig(
-            level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s"
-        )
-        logger.debug("train: debug mode enabled")
+        print("train: debug mode enabled")
 
     actor_opt = keras.optimizers.Adam(actor_lr)
     critic_opt = keras.optimizers.Adam(critic_lr)
@@ -693,7 +682,7 @@ def train(
         metrics["avg_return"] = avg_ret
         train_log.append(metrics)
         if debug:
-            logger.debug("update=%d metrics=%s", step, metrics)
+            print(f"update={step} metrics={metrics}")
 
         # Периодически оцениваем политику на валидационном наборе
         if (step + 1) % val_interval == 0:
@@ -702,7 +691,7 @@ def train(
             )
             val_log.append(val_metrics)
             if debug:
-                logger.debug("validation metrics=%s", val_metrics)
+                print(f"validation metrics={val_metrics}")
             profit = val_metrics.get("Equity", 0.0)
             if profit > best_profit:
                 best_profit = profit
