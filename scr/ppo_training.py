@@ -243,7 +243,6 @@ def collect_trajectories(
                     logp_buf[i].append(logps[i])
                     mask_buf[i].append(masks[i])
                     done_buf[i].append(done)
-
                     if done:
                         s = int(np.random.choice(starts))
                         window_df = train_df.iloc[s : s + L].reset_index(drop=True)
