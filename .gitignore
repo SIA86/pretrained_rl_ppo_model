@@ -9,6 +9,8 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+ppo_weights/*.h5
+sl_weights/*.h5
 develop-eggs/
 dist/
 downloads/
