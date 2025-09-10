@@ -68,32 +68,42 @@ class Trajectory:
 def prepare_datasets(
     df: pd.DataFrame,
     feature_cols: List[str],
-    splits: Tuple[float, float, float] = (0.8, 0.1, 0.1),
+    splits: Tuple[float, float, float] = None,
+    test_from: str = None,
     norm_kind: str = "zscore",
 ) -> Tuple[
     pd.DataFrame,
-    pd.DataFrame,
+    pd.DataFrame | None,
     pd.DataFrame,
     NormalizationStats,
 ]:
     """Разбить ``df`` на Train/Val/Test и нормализовать признаки."""
-    assert abs(sum(splits) - 1.0) < 1e-8
-    n = len(df)
-    s1 = int(n * splits[0])
-    s2 = int(n * (splits[0] + splits[1]))
-    train_df = df[feature_cols].iloc[:s1].reset_index(drop=True).copy()
-    val_df = df[feature_cols].iloc[s1:s2].reset_index(drop=True).copy()
-    test_df = df[feature_cols].iloc[s2:].reset_index(drop=True).copy()
+    if splits is not None:
+        assert abs(sum(splits) - 1.0) < 1e-8
+        n = len(df)
+        s1 = int(n * splits[0])
+        s2 = int(n * (splits[0] + splits[1]))
+        train_df = df[feature_cols].iloc[:s1].reset_index(drop=True).copy()
+        val_df = df[feature_cols].iloc[s1:s2].reset_index(drop=True).copy()
+        test_df = df[feature_cols].iloc[s2:].reset_index(drop=True).copy()
+    elif test_from is not None:
+        if isinstance(test_from, str) and test_from:
+            train_df = df[feature_cols].loc[:test_from].reset_index(drop=True).copy()
+            val_df = None
+            test_df = df[feature_cols].loc[test_from:].reset_index(drop=True).copy()
+    else:
+        raise ValueError('No "splits" or "test_from" params given')
 
     # Считаем статистики нормализации по тренировочной части
     feat_stats = NormalizationStats(kind=norm_kind).fit(
-        train_df[feature_cols].to_numpy(np.float32)
+        train_df[feature_cols].to_numpy(dtype=np.float32)
     )
     # Применяем нормализацию к каждому из подмножеств
     for part in (train_df, val_df, test_df):
-        part[feature_cols] = feat_stats.transform(
-            part[feature_cols].to_numpy(np.float32)
-        )
+        if part is not None:
+            part[feature_cols] = feat_stats.transform(
+                part[feature_cols].to_numpy(dtype=np.float32)
+            )
 
     return train_df, val_df, test_df, feat_stats
 
@@ -663,13 +673,22 @@ def train(
 
 def testing_simulation(
     test_df,
-    actor,
+    actor_weights,
     seq_len,
     feature_dim,
+    units_per_layer,
+    dropout,
+    num_actions,
     feature_cols,
     test_cfg,
     debug=False
 ):
+    actor_backbone = build_backbone(
+        seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
+    )
+    actor = build_head(actor_backbone, num_actions)
+    actor.load_weights(actor_weights)
+
     test_env = BacktestEnv(
         test_df,
         feature_cols=feature_cols,
@@ -679,6 +698,10 @@ def testing_simulation(
     )
     evaluate_profit(test_env, actor, seq_len, feature_dim, debug=debug)
     fig = test_env.plot("PPO testing")
+    metrics = test_env.metrics_report()
+    print("Metrics Report")
+    for k,v in metrics.items():
+      print(f"{k}: {v}")
 
 
 __all__ = [
