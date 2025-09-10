@@ -510,14 +510,13 @@ def evaluate_profit(
 def train(
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
-    test_df: pd.DataFrame,
     cfg: EnvConfig,
     val_cfg: EnvConfig,
-    test_cfg: EnvConfig,
     feature_dim: int,
     feature_cols: List[str],
     seq_len: int,
     teacher_weights: str,
+    critic_weights: str,
     backbone_weights: str,
     save_path: str,
     num_actions: int,
@@ -540,7 +539,6 @@ def train(
     val_interval: int,
     fine_tune: bool = False,
     debug: bool = False,
-    use_parallel: bool = False,
 ) -> Tuple[keras.Model, keras.Model, List[Dict[str, float]], List[Dict[str, float]]]:
     """Основной цикл обучения PPO поверх табличных данных."""
     # создаем среду для валидации и инфереса feature_dim
@@ -569,6 +567,8 @@ def train(
         seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
     )
     if fine_tune:
+        if critic_weights:
+            critic.load_weights(critic_weights)
         actor_backbone.trainable = False
     teacher = build_head(teacher_backbone, num_actions)
     actor = build_head(actor_backbone, num_actions)
@@ -654,21 +654,7 @@ def train(
 
     actor.save_weights(os.path.join(save_path, "actor_final.weights.h5"))
     critic.save_weights(os.path.join(save_path, "critic_final.weights.h5"))
-    actor.load_weights(best_actor_path)
-    critic.load_weights(best_critic_path)
 
-    # Финальная оценка на тестовой выборке и сохранение графика
-    test_env = BacktestEnv(
-        test_df,
-        feature_cols=feature_cols,
-        price_col="Open",
-        cfg=test_cfg,
-        ppo_true=True
-    )
-    evaluate_profit(test_env, actor, seq_len, feature_dim, debug=debug)
-    fig = test_env.plot("PPO inference")
-    os.makedirs("results", exist_ok=True)
-    fig.savefig(os.path.join("results", "ppo_inference.png"))
     return actor, critic, train_log, val_log
 
 def testing_simulation(
