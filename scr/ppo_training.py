@@ -38,15 +38,18 @@ def build_critic(
     units_per_layer: List[int],
     dropout: float,
     backbone_weights: str | None = None,
-) -> Tuple[keras.Model, keras.Model]:
-    """Создать критика с общей архитектурой и опциональной загрузкой бэкбона."""
-    # Создаём две независимые копии бэкбона для актёра и критика
+    freeze_backbone: bool = False,
+) -> keras.Model:
+    """Создать критика и при необходимости заморозить его бэкбон."""
+    # Создаём бэкбон критика
     critic_backbone = build_backbone(
         seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
     )
     # При необходимости загружаем предобученные веса бэкбона
     if backbone_weights:
         critic_backbone.load_weights(backbone_weights)
+    if freeze_backbone:
+        critic_backbone.trainable = False
     # На выход бэкбона навешиваются головы актёра и критика
     critic = build_head(critic_backbone, 1)
     return critic
@@ -525,6 +528,7 @@ def train(
     max_grad_norm: float,
     target_kl: float,
     val_interval: int,
+    fine_tune: bool = False,
     debug: bool = False,
     use_parallel: bool = False,
 ) -> Tuple[keras.Model, keras.Model, List[Dict[str, float]], List[Dict[str, float]]]:
@@ -546,6 +550,7 @@ def train(
         units_per_layer=units_per_layer,
         dropout=dropout,
         backbone_weights=backbone_weights,
+        freeze_backbone=fine_tune,
     )
     teacher_backbone = build_backbone(
         seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
@@ -553,6 +558,8 @@ def train(
     actor_backbone = build_backbone(
         seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
     )
+    if fine_tune:
+        actor_backbone.trainable = False
     teacher = build_head(teacher_backbone, num_actions)
     actor = build_head(actor_backbone, num_actions)
     teacher.load_weights(teacher_weights)
@@ -675,7 +682,6 @@ def testing_simulation(
 
 
 __all__ = [
-    "build_actor_critic",
     "prepare_datasets",
     "collect_trajectories",
     "ppo_update",

@@ -8,12 +8,7 @@ from tensorflow import keras
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from scr.backtest_env import EnvConfig
-from scr.ppo_training import (
-    build_actor_critic,
-    collect_trajectories,
-    ppo_update,
-    prepare_datasets,
-)
+from scr.ppo_training import collect_trajectories, ppo_update, train
 from scr.residual_lstm import build_backbone, build_head, VERY_NEG
 
 
@@ -35,15 +30,21 @@ def make_cfg():
     )
 
 
+def build_models(seq_len, feature_dim, num_actions=4):
+    actor_backbone = build_backbone(seq_len, feature_dim)
+    critic_backbone = build_backbone(seq_len, feature_dim)
+    actor = build_head(actor_backbone, num_actions)
+    critic = build_head(critic_backbone, 1)
+    return actor, critic
+
+
 def test_build_and_collect():
     train_df = make_df()
     feat_cols = ["feat"]
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
-    actor, critic = build_actor_critic(
-        seq_len, feature_dim, num_actions=4, units_per_layer=[64, 32], dropout=0.5
-    )
+    actor, critic = build_models(seq_len, feature_dim)
     traj = collect_trajectories(
         train_df,
         actor,
@@ -67,9 +68,7 @@ def test_collect_trajectories_parallel():
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
-    actor, critic = build_actor_critic(
-        seq_len, feature_dim, num_actions=4, units_per_layer=[64, 32], dropout=0.5
-    )
+    actor, critic = build_models(seq_len, feature_dim)
     traj = collect_trajectories(
         train_df,
         actor,
@@ -80,7 +79,6 @@ def test_collect_trajectories_parallel():
         rollout=2,
         seq_len=seq_len,
         num_actions=4,
-        use_parallel=True,
     )
     assert traj.obs.shape == (4, seq_len, feature_dim)
 
@@ -91,9 +89,7 @@ def test_ppo_update_kl_decay():
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
-    actor, critic = build_actor_critic(
-        seq_len, feature_dim, num_actions=4, units_per_layer=[64, 32], dropout=0.5
-    )
+    actor, critic = build_models(seq_len, feature_dim)
     teacher_backbone = build_backbone(seq_len, feature_dim)
     teacher = build_head(teacher_backbone, 4)
     traj = collect_trajectories(
@@ -162,3 +158,59 @@ def test_collect_trajectories_nan_probs():
         num_actions=4,
     )
     assert np.all(np.isfinite(traj.old_logp))
+
+
+def test_train_freeze_backbones(tmp_path):
+    df = make_df()
+    feat_cols = ["feat"]
+    cfg = make_cfg()
+    seq_len = 1
+    feature_dim = len(feat_cols) + 5
+    weight_path = tmp_path / "weights.weights.h5"
+    backbone = build_backbone(
+        seq_len, feature_dim, units_per_layer=[64, 32], dropout=0.5
+    )
+    model = build_head(backbone, 4)
+    model.save_weights(weight_path)
+    tf.config.run_functions_eagerly(True)
+    try:
+        actor, critic, _, _ = train(
+            df,
+            df,
+            df,
+            cfg,
+            cfg,
+            cfg,
+            feature_dim,
+            feat_cols,
+            seq_len,
+            teacher_weights=str(weight_path),
+            backbone_weights=str(weight_path),
+            save_path=str(tmp_path),
+            num_actions=4,
+            units_per_layer=[64, 32],
+            dropout=0.5,
+            updates=1,
+            n_env=1,
+            rollout=1,
+            actor_lr=1e-3,
+            critic_lr=1e-3,
+            clip_ratio=0.2,
+            c1=0.5,
+            c2=0.01,
+            epochs=1,
+            batch_size=1,
+            teacher_kl=0.1,
+            kl_decay=0.5,
+            max_grad_norm=1.0,
+            target_kl=1.0,
+            val_interval=1,
+            fine_tune=True,
+        )
+    finally:
+        tf.config.run_functions_eagerly(False)
+    actor_layers = [l for l in actor.layers if l.name.startswith("feat_")]
+    critic_layers = [l for l in critic.layers if l.name.startswith("feat_")]
+    assert actor_layers and critic_layers
+    assert not any(layer.trainable for layer in actor_layers)
+    assert not any(layer.trainable for layer in critic_layers)
