@@ -622,7 +622,6 @@ def run_backtest_with_logits(
     feature_cols: Optional[List[str]] = None,
     price_col: str = "close",
     cfg: EnvConfig = DEFAULT_CONFIG,
-    state_stats: Optional[NormalizationStats] = None,
     show_progress: bool = True,
     q_threshold: float | None = None,
 ) -> BacktestEnv:
@@ -650,8 +649,6 @@ def run_backtest_with_logits(
         Имя колонки с ценой.
     cfg:
         Конфигурация среды ``BacktestEnv``.
-    state_stats:
-        Статистика нормализации состояния аккаунта, передаваемая в среду.
     show_progress:
         Показывать ли индикатор прогресса бэктеста.
     q_threshold:
@@ -675,7 +672,6 @@ def run_backtest_with_logits(
         feature_cols=feature_cols,
         price_col=price_col,
         cfg=cfg,
-        state_stats=state_stats,
         ppo_true=False
     )
     env.reset()
