@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow import keras
+import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -160,6 +161,53 @@ def test_collect_trajectories_nan_probs():
     assert np.all(np.isfinite(traj.old_logp))
 
 
+def test_collect_trajectories_index_ranges():
+    df = pd.DataFrame({"Open": np.ones(20), "feat": np.arange(20)})
+    feat_cols = ["feat"]
+    cfg = make_cfg()
+    seq_len = 1
+    feature_dim = len(feat_cols) + 5
+    actor, critic = build_models(seq_len, feature_dim)
+    rollout = 2
+    needed = max(cfg.max_steps + seq_len, rollout)
+    traj = collect_trajectories(
+        df,
+        actor,
+        critic,
+        cfg,
+        feat_cols,
+        index_ranges=[(5, needed)],
+        n_env=1,
+        rollout=rollout,
+        seq_len=seq_len,
+        num_actions=4,
+    )
+    assert traj.obs.shape == (rollout, seq_len, feature_dim)
+    assert traj.obs[0, 0, 0] == 5
+
+
+def test_collect_trajectories_invalid_range():
+    df = make_df()
+    feat_cols = ["feat"]
+    cfg = make_cfg()
+    seq_len = 1
+    feature_dim = len(feat_cols) + 5
+    actor, critic = build_models(seq_len, feature_dim)
+    with pytest.raises(ValueError):
+        collect_trajectories(
+            df,
+            actor,
+            critic,
+            cfg,
+            feat_cols,
+            index_ranges=[(0, 1)],
+            n_env=1,
+            rollout=2,
+            seq_len=seq_len,
+            num_actions=4,
+        )
+
+
 def test_train_freeze_backbones(tmp_path):
     df = make_df()
     feat_cols = ["feat"]
@@ -177,14 +225,13 @@ def test_train_freeze_backbones(tmp_path):
         actor, critic, _, _ = train(
             df,
             df,
-            df,
-            cfg,
             cfg,
             cfg,
             feature_dim,
             feat_cols,
             seq_len,
             teacher_weights=str(weight_path),
+            critic_weights="",
             backbone_weights=str(weight_path),
             save_path=str(tmp_path),
             num_actions=4,

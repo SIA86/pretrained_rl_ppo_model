@@ -130,18 +130,50 @@ def collect_trajectories(
     rollout: int,
     seq_len: int,
     num_actions: int,
+    index_ranges: Optional[List[Tuple[str, int]]] = None,
     gamma: float = 0.99,
     lam: float = 0.95,
     debug: bool = False,
 ) -> Trajectory:
-    """Собрать батч траекторий из ``n_env`` сред с пересэмплингом окон."""
+    """Собрать батч траекторий из ``n_env`` сред с пересэмплингом окон.
+
+    Parameters
+    ----------
+    index_ranges : list of tuples, optional
+        Список допустимых диапазонов ``(start_index, length)`` для выбора стартовых
+        индексов. ``length`` должен быть не меньше ``max(cfg.max_steps + seq_len, rollout)``.
+        Если не задано, используется весь диапазон ``train_df``.
+    """
     L = cfg.max_steps + 1
+    needed = max(cfg.max_steps + seq_len, rollout)
     if debug:
         print(
             f"collect_trajectories: n_env={n_env} rollout={rollout} seq_len={seq_len}"
         )
-    max_start = len(train_df) - L
-    starts = np.arange(max_start + 1)
+    if index_ranges:
+        start_lists: List[np.ndarray] = []
+        for start_label, length in index_ranges:
+            pos = train_df.index.get_indexer([start_label])[0]
+            if pos == -1:
+                raise ValueError(f"start index {start_label} not in DataFrame")
+            if length < needed:
+                raise ValueError(
+                    f"Range ({start_label}, {length}) shorter than required {needed}"
+                )
+            end = pos + length
+            if end > len(train_df):
+                raise ValueError(
+                    f"Range ({start_label}, {length}) exceeds DataFrame length {len(train_df)}"
+                )
+            start_lists.append(np.arange(pos, end - needed + 1))
+        if not start_lists:
+            raise ValueError("No valid start indices in index_ranges")
+        starts = np.concatenate(start_lists)
+    else:
+        max_start = len(train_df) - needed
+        if max_start < 0:
+            raise ValueError("DataFrame too short for given parameters")
+        starts = np.arange(max_start + 1)
 
     envs: List[BacktestEnv] = []
     state_hists: List[List[np.ndarray]] = []
@@ -537,6 +569,7 @@ def train(
     max_grad_norm: float,
     target_kl: float,
     val_interval: int,
+    index_ranges: Optional[List[Tuple[str, int]]] = None,
     fine_tune: bool = False,
     debug: bool = False,
 ) -> Tuple[keras.Model, keras.Model, List[Dict[str, float]], List[Dict[str, float]]]:
@@ -605,6 +638,7 @@ def train(
             critic,
             cfg,
             feature_cols,
+            index_ranges=index_ranges,
             n_env=n_env,
             rollout=rollout,
             seq_len=seq_len,
