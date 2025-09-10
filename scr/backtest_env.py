@@ -540,6 +540,7 @@ class BacktestEnv:
             a.legend()
 
         plt.tight_layout()
+        plt.show()
         return fig
 
     def metrics_report(self) -> Dict[str, float]:

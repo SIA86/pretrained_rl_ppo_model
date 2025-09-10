@@ -30,7 +30,7 @@ from .residual_lstm import (
 
 
 
-def build_actor_critic(
+def build_critic(
     seq_len: int,
     feature_dim: int,
     *,
@@ -39,23 +39,17 @@ def build_actor_critic(
     dropout: float,
     backbone_weights: str | None = None,
 ) -> Tuple[keras.Model, keras.Model]:
-    """Создать сети актёра и критика с общей архитектурой и опциональной загрузкой бэкбона."""
-
+    """Создать критика с общей архитектурой и опциональной загрузкой бэкбона."""
     # Создаём две независимые копии бэкбона для актёра и критика
-    actor_backbone = build_backbone(
-        seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
-    )
     critic_backbone = build_backbone(
         seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
     )
     # При необходимости загружаем предобученные веса бэкбона
     if backbone_weights:
-        actor_backbone.load_weights(backbone_weights)
         critic_backbone.load_weights(backbone_weights)
     # На выход бэкбона навешиваются головы актёра и критика
-    actor = build_head(actor_backbone, num_actions)
     critic = build_head(critic_backbone, 1)
-    return actor, critic
+    return critic
 
 
 @dataclass
@@ -167,6 +161,9 @@ def collect_trajectories(
     logp_buf = [[] for _ in range(n_env)]
     mask_buf = [[] for _ in range(n_env)]
     done_buf = [[] for _ in range(n_env)]
+
+    if debug:
+        print(f'parallel mode: {use_parallel}')
 
     if use_parallel:
         with ProcessPoolExecutor(max_workers=min(n_env, os.cpu_count() or 1)) as pool:
@@ -302,10 +299,6 @@ def collect_trajectories(
                 value = float(critic(feat[None, ...], training=False).numpy()[0, 0])
                 next_obs, reward, done, _ = env.step(action)
                 state_hists[i].append(next_obs["state"])
-                if debug:
-                    print(
-                        f"env={i} t={env.t} action={action} reward={reward:.4f} done={done}"
-                    )
                 if done:
                     next_value = 0.0
                 else:
@@ -559,11 +552,6 @@ def evaluate_profit(
         action = int(tf.argmax(masked, axis=-1)[0])
         obs, _, done, _ = env.step(action)
         state_hist.append(obs["state"])
-        if debug:
-            print(
-                "evaluate_profit: t=%d action=%d equity=%.4f"
-                % (env.t, action, env.equity)
-            )
         if done:
             break
     metrics = env.metrics_report()
@@ -577,6 +565,7 @@ def train(
     val_df: pd.DataFrame,
     test_df: pd.DataFrame,
     cfg: EnvConfig,
+    val_cfg: EnvConfig,
     feature_dim: int,
     feature_cols: List[str],
     seq_len: int,
@@ -602,6 +591,7 @@ def train(
     target_kl: float,
     val_interval: int,
     debug: bool = False,
+    use_parallel: bool = False,
 ) -> Tuple[keras.Model, keras.Model, List[Dict[str, float]], List[Dict[str, float]]]:
     """Основной цикл обучения PPO поверх табличных данных."""
     # создаем среду для валидации и инфереса feature_dim
@@ -609,12 +599,12 @@ def train(
         val_df,
         feature_cols=feature_cols,
         price_col="Open",
-        cfg=cfg,
+        cfg=val_cfg,
         ppo_true=True
     )
 
     # Создаём модели актёра и критика
-    actor, critic = build_actor_critic(
+    critic = build_critic(
         seq_len,
         feature_dim,
         num_actions=num_actions,
@@ -625,11 +615,19 @@ def train(
     teacher_backbone = build_backbone(
         seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
     )
+    actor_backbone = build_backbone(
+        seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
+    )
     teacher = build_head(teacher_backbone, num_actions)
+    actor = build_head(actor_backbone, num_actions)
     teacher.load_weights(teacher_weights)
+    actor.load_weights(teacher_weights)
     teacher.trainable = False
     if debug:
         print("train: debug mode enabled")
+        print("Teacher policy")
+        evaluate_profit(val_env, teacher, seq_len, feature_dim, debug=debug)
+        fig = val_env.plot("PPO teacher")
 
     actor_opt = keras.optimizers.Adam(actor_lr)
     critic_opt = keras.optimizers.Adam(critic_lr)
@@ -658,6 +656,7 @@ def train(
             seq_len=seq_len,
             num_actions=num_actions,
             debug=debug,
+            use_parallel=use_parallel
         )
         kl_coef, metrics = ppo_update(
             actor,
@@ -689,10 +688,9 @@ def train(
             val_metrics = evaluate_profit(
                 val_env, actor, seq_len, feature_dim, debug=debug
             )
+            fig = val_env.plot("PPO validation")
             val_log.append(val_metrics)
-            if debug:
-                print(f"validation metrics={val_metrics}")
-            profit = val_metrics.get("Equity", 0.0)
+            profit = val_metrics.get("Realized PnL", 0.0)
             if profit > best_profit:
                 best_profit = profit
                 actor.save_weights(best_actor_path)
@@ -710,8 +708,9 @@ def train(
     test_env = BacktestEnv(
         test_df,
         feature_cols=feature_cols,
-        price_col="Close",
-        cfg=cfg,
+        price_col="Open",
+        cfg=val_cfg,
+        ppo_true=True
     )
     evaluate_profit(test_env, actor, seq_len, feature_dim, debug=debug)
     fig = test_env.plot("PPO inference")
