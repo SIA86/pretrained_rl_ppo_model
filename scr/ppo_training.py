@@ -564,6 +564,8 @@ def train(
     clip_ratio: float,
     c1: float,
     c2: float,
+    gamma: float,
+    lam: float,
     epochs: int,
     batch_size: int,
     teacher_kl: float,
@@ -649,6 +651,8 @@ def train(
             rollout=rollout,
             seq_len=seq_len,
             num_actions=num_actions,
+            gamma=gamma,
+            lam=lam,
             debug=debug,
         )
         kl_coef, metrics = ppo_update(
