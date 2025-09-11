@@ -493,7 +493,7 @@ class BacktestEnv:
         closes = log[log["closed"]]
 
         # В зависимости от режима торговли выбираем направление стрелок
-        open_marker = "^" if self.cfg.mode == 1 else "v"
+        open_marker = "^" if self.cfg.mode == 1 else "v"equity
         close_marker = "v" if self.cfg.mode == 1 else "^"
 
         if not opens.empty:

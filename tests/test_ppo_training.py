@@ -220,42 +220,38 @@ def test_train_freeze_backbones(tmp_path):
     )
     model = build_head(backbone, 4)
     model.save_weights(weight_path)
-    tf.config.run_functions_eagerly(True)
-    try:
-        actor, critic, _, _ = train(
-            df,
-            df,
-            cfg,
-            cfg,
-            feature_dim,
-            feat_cols,
-            seq_len,
-            teacher_weights=str(weight_path),
-            critic_weights="",
-            backbone_weights=str(weight_path),
-            save_path=str(tmp_path),
-            num_actions=4,
-            units_per_layer=[64, 32],
-            dropout=0.5,
-            updates=1,
-            n_env=1,
-            rollout=1,
-            actor_lr=1e-3,
-            critic_lr=1e-3,
-            clip_ratio=0.2,
-            c1=0.5,
-            c2=0.01,
-            epochs=1,
-            batch_size=1,
-            teacher_kl=0.1,
-            kl_decay=0.5,
-            max_grad_norm=1.0,
-            target_kl=1.0,
-            val_interval=1,
-            fine_tune=True,
-        )
-    finally:
-        tf.config.run_functions_eagerly(False)
+    actor, critic, _, _ = train(
+        df,
+        df,
+        cfg,
+        cfg,
+        feature_dim,
+        feat_cols,
+        seq_len,
+        teacher_weights=str(weight_path),
+        critic_weights="",
+        backbone_weights=str(weight_path),
+        save_path=str(tmp_path),
+        num_actions=4,
+        units_per_layer=[64, 32],
+        dropout=0.5,
+        updates=1,
+        n_env=1,
+        rollout=1,
+        actor_lr=1e-3,
+        critic_lr=1e-3,
+        clip_ratio=0.2,
+        c1=0.5,
+        c2=0.01,
+        epochs=1,
+        batch_size=1,
+        teacher_kl=0.1,
+        kl_decay=0.5,
+        max_grad_norm=1.0,
+        target_kl=1.0,
+        val_interval=1,
+        fine_tune=True,
+    )
     actor_layers = [l for l in actor.layers if l.name.startswith("feat_")]
     critic_layers = [l for l in critic.layers if l.name.startswith("feat_")]
     assert actor_layers and critic_layers

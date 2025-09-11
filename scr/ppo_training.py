@@ -29,7 +29,6 @@ from .residual_lstm import (
 )
 
 
-
 def build_critic(
     seq_len: int,
     feature_dim: int,
@@ -49,6 +48,7 @@ def build_critic(
     if backbone_weights:
         critic_backbone.load_weights(backbone_weights)
     if freeze_backbone:
+        print('Critic backbone training off')
         critic_backbone.trainable = False
     # На выход бэкбона навешиваются головы актёра и критика
     critic = build_head(critic_backbone, 1)
@@ -83,14 +83,14 @@ def prepare_datasets(
         n = len(df)
         s1 = int(n * splits[0])
         s2 = int(n * (splits[0] + splits[1]))
-        train_df = df[feature_cols].iloc[:s1].reset_index(drop=True).copy()
-        val_df = df[feature_cols].iloc[s1:s2].reset_index(drop=True).copy()
-        test_df = df[feature_cols].iloc[s2:].reset_index(drop=True).copy()
+        train_df = df[feature_cols].iloc[:s1].copy()
+        val_df = df[feature_cols].iloc[s1:s2].copy()
+        test_df = df[feature_cols].iloc[s2:].copy()
     elif test_from is not None:
         if isinstance(test_from, str) and test_from:
-            train_df = df[feature_cols].loc[:test_from].reset_index(drop=True).copy()
+            train_df = df[feature_cols].loc[:test_from].copy()
             val_df = None
-            test_df = df[feature_cols].loc[test_from:].reset_index(drop=True).copy()
+            test_df = df[feature_cols].loc[test_from:].copy()
     else:
         raise ValueError('No "splits" or "test_from" params given')
 
@@ -148,7 +148,7 @@ def collect_trajectories(
     needed = max(cfg.max_steps + seq_len, rollout)
     if debug:
         print(
-            f"collect_trajectories: n_env={n_env} rollout={rollout} seq_len={seq_len}"
+            f"\ncollect_trajectories: n_env={n_env} rollout={rollout} seq_len={seq_len}"
         )
     if index_ranges:
         start_lists: List[np.ndarray] = []
@@ -168,12 +168,15 @@ def collect_trajectories(
             start_lists.append(np.arange(pos, end - needed + 1))
         if not start_lists:
             raise ValueError("No valid start indices in index_ranges")
-        starts = np.concatenate(start_lists)
+        starts = np.unique(np.concatenate(start_lists))
     else:
         max_start = len(train_df) - needed
         if max_start < 0:
             raise ValueError("DataFrame too short for given parameters")
         starts = np.arange(max_start + 1)
+
+    if debug:
+        print(f"Valid Indexes length :{len(starts)}")
 
     envs: List[BacktestEnv] = []
     state_hists: List[List[np.ndarray]] = []
@@ -430,6 +433,11 @@ def ppo_update(
     old_logp = tf.convert_to_tensor(traj.old_logp)
     masks = tf.convert_to_tensor(traj.masks)
 
+    if not actor_opt.built:
+        actor_opt.build(actor.trainable_variables)
+    if not critic_opt.built:
+        critic_opt.build(critic.trainable_variables)
+
     # Создаём датасет TensorFlow и перемешиваем его для SGD
     dataset = tf.data.Dataset.from_tensor_slices((obs, acts, adv, ret, old_logp, masks))
     dataset = dataset.shuffle(len(traj.actions)).batch(batch_size)
@@ -440,10 +448,11 @@ def ppo_update(
     approx_kls: List[float] = []
     clipfracs: List[float] = []
 
+    if debug:
+        print("\nUpdating PPO:")
+
     # Запускаем несколько эпох обучения на собранном батче
     for ep in range(epochs):
-        if debug:
-            print(f"ppo_update: epoch {ep + 1}/{epochs}")
         for batch in dataset:
             b_obs, b_act, b_adv, b_ret, b_old, b_mask = batch
             b_adv = (b_adv - tf.reduce_mean(b_adv)) / (tf.math.reduce_std(b_adv) + 1e-8)
@@ -481,13 +490,7 @@ def ppo_update(
             clipfracs.append(float(clipfrac))
             if debug:
                 print(
-                    "batch: policy_loss=%.5f value_loss=%.5f entropy=%.5f approx_kl=%.5f"
-                    % (
-                        float(policy_loss),
-                        float(value_loss),
-                        float(entropy),
-                        approx_kls[-1],
-                    )
+                    f"Epoch {ep+1}/{epochs}: batch: policy_loss={policy_loss:.5f} value_loss={value_loss:.5f} entropy={entropy:.5f} approx_kl={approx_kls[-1]:.5f}"
                 )
             if target_kl is not None and approx_kls[-1] > target_kl:
                 break
@@ -534,8 +537,7 @@ def evaluate_profit(
         if done:
             break
     metrics = env.metrics_report()
-    if debug:
-        print(f"evaluate_profit metrics={metrics}")
+
     return metrics
 
 
@@ -601,6 +603,7 @@ def train(
     )
     if fine_tune:
         if critic_weights:
+            print('Actor backbone training off')
             critic.load_weights(critic_weights)
         actor_backbone.trainable = False
     teacher = build_head(teacher_backbone, num_actions)
@@ -612,8 +615,11 @@ def train(
         print("train: debug mode enabled")
         print(f"CPU available: {os.cpu_count()}")
         print("Teacher policy")
-        evaluate_profit(val_env, teacher, seq_len, feature_dim, debug=debug)
+        teacher_metrics = evaluate_profit(val_env, teacher, seq_len, feature_dim, debug=debug)
         fig = val_env.plot("PPO teacher")
+        print(f"\nEvaluate profit:")
+        for k,v in teacher_metrics.items():
+          print(f"{k}: {v}")
 
     actor_opt = keras.optimizers.Adam(actor_lr)
     critic_opt = keras.optimizers.Adam(critic_lr)
@@ -668,23 +674,28 @@ def train(
         metrics["avg_return"] = avg_ret
         train_log.append(metrics)
         if debug:
-            print(f"update={step} metrics={metrics}")
+            print(f"\nUpdate={step} Training average metrics:")
+            for k,v in metrics.items():
+                print(f"{k}: {v:.5f}")
 
         # Периодически оцениваем политику на валидационном наборе
         if (step + 1) % val_interval == 0:
             val_metrics = evaluate_profit(
                 val_env, actor, seq_len, feature_dim, debug=debug
             )
-            fig = val_env.plot("PPO validation")
+            if debug:
+                fig = val_env.plot("PPO validation")
+                print(f"\nEvaluate_profit:")
+                for k,v in val_metrics.items():
+                  print(f"{k}: {v}")
+                
             val_log.append(val_metrics)
             profit = val_metrics.get("Realized PnL", 0.0)
             if profit > best_profit:
                 best_profit = profit
                 actor.save_weights(best_actor_path)
                 critic.save_weights(best_critic_path)
-            print(
-                f"update={step} avg_reward={avg_ret:.3f} profit={profit:.3f} kl_coef={kl_coef:.4f}"
-            )
+
 
     actor.save_weights(os.path.join(save_path, "actor_final.weights.h5"))
     critic.save_weights(os.path.join(save_path, "critic_final.weights.h5"))
@@ -719,7 +730,7 @@ def testing_simulation(
     evaluate_profit(test_env, actor, seq_len, feature_dim, debug=debug)
     fig = test_env.plot("PPO testing")
     metrics = test_env.metrics_report()
-    print("Metrics Report")
+    print("\nMetrics Report")
     for k,v in metrics.items():
       print(f"{k}: {v}")
 
