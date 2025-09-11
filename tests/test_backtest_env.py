@@ -61,7 +61,7 @@ def test_metrics_report():
     metrics = env.metrics_report()
     assert metrics["Win Rate"] == pytest.approx(50.0)
     assert metrics["Profit Factor"] == pytest.approx(2 / 3, rel=1e-3)
-    assert metrics["Maximum Drawdown"] == pytest.approx(1.5)
+    assert metrics["Maximum Drawdown"] == pytest.approx(0.5)
 
 
 def test_time_penalty():

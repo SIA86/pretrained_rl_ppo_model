@@ -493,7 +493,7 @@ class BacktestEnv:
         closes = log[log["closed"]]
 
         # В зависимости от режима торговли выбираем направление стрелок
-        open_marker = "^" if self.cfg.mode == 1 else "v"equity
+        open_marker = "^" if self.cfg.mode == 1 else "v"
         close_marker = "v" if self.cfg.mode == 1 else "^"
 
         if not opens.empty:
@@ -531,7 +531,8 @@ class BacktestEnv:
         # -----------------------------------------------------
         # 4) Накопленная доходность (equity)
         # -----------------------------------------------------
-        ax[3].plot(log["t"], log["equity"], label="equity")
+        equity_curve = log["equity"] + 1.0
+        ax[3].plot(log["t"], equity_curve, label="equity")
         ax[3].set_ylabel("Equity")
         ax[3].set_xlabel("Step")
 
@@ -549,8 +550,8 @@ class BacktestEnv:
             return {}
 
         log = self.logs()
-        equity_curve = log["equity"]
-        equity = equity_curve.iloc[-1]
+        equity_curve = log["equity"] + 1.0
+        equity = equity_curve.iloc[-1] - 1.0
         realized_pnl = log["realized_pnl"].iloc[-1]
 
         returns = equity_curve.diff().dropna()
