@@ -154,17 +154,11 @@ def collect_trajectories(
         start_lists: List[np.ndarray] = []
         for start_label, length in index_ranges:
             pos = train_df.index.get_indexer([start_label])[0]
-            if pos == -1:
-                raise ValueError(f"start index {start_label} not in DataFrame")
-            if length < needed:
-                raise ValueError(
-                    f"Range ({start_label}, {length}) shorter than required {needed}"
-                )
+            if pos == -1 or length < needed:
+                continue
             end = pos + length
             if end > len(train_df):
-                raise ValueError(
-                    f"Range ({start_label}, {length}) exceeds DataFrame length {len(train_df)}"
-                )
+                continue
             start_lists.append(np.arange(pos, end - needed + 1))
         if not start_lists:
             raise ValueError("No valid start indices in index_ranges")
@@ -558,6 +552,7 @@ def train(
     dropout: float,
     updates: int,
     n_env: int,
+    n_validations: int,
     rollout: int,
     actor_lr: float,
     critic_lr: float,
@@ -578,14 +573,28 @@ def train(
     debug: bool = False,
 ) -> Tuple[keras.Model, keras.Model, List[Dict[str, float]], List[Dict[str, float]]]:
     """Основной цикл обучения PPO поверх табличных данных."""
+    if debug:
+        print(f"CPU available: {os.cpu_count()}")
+
     # создаем среду для валидации и инфереса feature_dim
-    val_env = BacktestEnv(
-        val_df,
-        feature_cols=feature_cols,
-        price_col="Open",
-        cfg=val_cfg,
-        ppo_true=True
-    )
+    val_start_lists: List[np.ndarray] = []
+    needed = val_cfg.max_steps
+    if index_ranges:
+        for start_label, length in index_ranges:
+            pos = val_df.index.get_indexer([start_label])[0]
+            if pos == -1:
+                continue
+            end = pos + length
+            if end > len(val_df):
+                continue
+            val_start_lists.append((start_label, length))
+        if not val_start_lists:
+            raise ValueError("No valid start indices in index_ranges")
+    else:
+        max_start = len(val_df) - needed
+        if max_start < 0:
+            raise ValueError("DataFrame too short for given parameters")
+        val_starts = np.arange(max_start + 1)
 
     # Создаём модели актёра и критика
     critic = build_critic(
@@ -613,15 +622,6 @@ def train(
     teacher.load_weights(teacher_weights)
     actor.load_weights(teacher_weights)
     teacher.trainable = False
-    if debug:
-        print("train: debug mode enabled")
-        print(f"CPU available: {os.cpu_count()}")
-        print("Teacher policy")
-        teacher_metrics = evaluate_profit(val_env, teacher, seq_len, feature_dim, debug=debug)
-        fig = val_env.plot("PPO teacher")
-        print(f"\nEvaluate profit:")
-        for k,v in teacher_metrics.items():
-          print(f"{k}: {v}")
 
     actor_opt = keras.optimizers.Adam(actor_lr)
     critic_opt = keras.optimizers.Adam(critic_lr)
@@ -631,14 +631,36 @@ def train(
     kl_coef = teacher_kl
     best_profit = -np.inf
 
-
     train_log: List[Dict[str, float]] = []
     val_log: List[Dict[str, float]] = []
 
-    for step in range(updates):
-        best_actor_path = os.path.join(save_path, f"actor_best_{step}.weights.h5")
-        best_critic_path = os.path.join(save_path, f"critic_best_{step}.weights.h5")
+    val_windows = []
+    for num in range(n_validations):
+        if val_start_lists:
+            s = int(np.random.choice(range(len(val_start_lists))))
+            start, length = val_start_lists[s]
+            val_windows.append(val_df.loc[start:].iloc[:length])
+        else:
+            s = int(np.random.choice(val_starts))
+            val_windows.append(val_df.iloc[s : s + needed + 1])
 
+    for window_df in val_windows:
+        teacher_env = BacktestEnv(
+            window_df, 
+            feature_cols=feature_cols,
+            cfg=val_cfg, 
+            price_col='Open', 
+            ppo_true=True
+        )
+    
+        print("Teacher policy")
+        teacher_metrics = evaluate_profit(teacher_env, teacher, seq_len, feature_dim, debug=debug)
+        fig = teacher_env.plot("PPO teacher")
+        print(f"\nEvaluate profit:")
+        for k,v in teacher_metrics.items():
+            print(f"{k}: {v}")
+
+    for step in range(updates):
         # Сбор траекторий и обновление параметров
         traj = collect_trajectories(
             train_df,
@@ -683,20 +705,35 @@ def train(
                 print(f"{k}: {v:.5f}")
 
         # Периодически оцениваем политику на валидационном наборе
+        val_env_profits = []
+
         if (step + 1) % val_interval == 0:
-            val_metrics = evaluate_profit(
-                val_env, actor, seq_len, feature_dim, debug=debug
-            )
-            if debug:
+            for window_df in val_windows:
+                val_env = BacktestEnv(
+                    window_df, 
+                    feature_cols=feature_cols,
+                    cfg=val_cfg, 
+                    price_col='Open', 
+                    ppo_true=True
+                )
+        
+                val_metrics = evaluate_profit(val_env, actor, seq_len, feature_dim, debug=debug)
                 fig = val_env.plot("PPO validation")
                 print(f"\nEvaluate_profit:")
                 for k,v in val_metrics.items():
                   print(f"{k}: {v}")
                 
-            val_log.append(val_metrics)
-            profit = val_metrics.get("Realized PnL", 0.0)
-            if profit > best_profit:
-                best_profit = profit
+                val_log.append(val_metrics)
+                val_env_profits.append(val_metrics.get("Realized PnL", 0.0))
+
+            avg_profit = np.mean(np.array(val_env_profits))
+
+            best_actor_path = os.path.join(save_path, f"actor_best_ep:{step+1}_rt:{avg_profit:.4f}.weights.h5")
+            best_critic_path = os.path.join(save_path, f"critic_best_ep:{step+1}_rt{avg_profit:.4f}.weights.h5")
+            
+            if avg_profit > best_profit:
+                print(f"\nНайден новый чемпион. Средний профит на валидации: {avg_profit:.5f}")
+                best_profit = avg_profit
                 actor.save_weights(best_actor_path)
                 critic.save_weights(best_critic_path)
 

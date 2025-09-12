@@ -20,7 +20,6 @@ except Exception:  # pragma: no cover
 # =============================================================
 class EnvConfig(NamedTuple):
     """Настройки торговой среды."""
-
     # Режим торговли: +1 только лонг, -1 только шорт
     mode: int
     # Комиссия как доля от номинала сделки
@@ -35,6 +34,8 @@ class EnvConfig(NamedTuple):
     reward_scale: float
     # Использовать ли логарифмическую доходность
     use_log_reward: bool
+    # задержка после которой начинат начисляться штраф
+    valid_time: int
     # Штраф за каждый шаг удержания позиции
     time_penalty: float
     # Штраф за бездействие без открытой позиции
@@ -49,6 +50,7 @@ DEFAULT_CONFIG = EnvConfig(
     max_steps=10**9,  # практически бесконечный эпизод
     reward_scale=1.0,  # без масштабирования вознаграждения
     use_log_reward=False,  # линейная доходность
+    valid_time=5,
     time_penalty=0.0,  # нет штрафа за удержание
     hold_penalty=0.0,  # нет штрафа за бездействие
 )
@@ -70,13 +72,15 @@ def _fee_notional(price_exec: float64, leverage: float64, fee: float64) -> float
     return price_exec * leverage * fee
 
 
-@njit(cache=False, fastmath=False)
+# @njit(cache=False, fastmath=False)
 def _step_single(
     action: int64,
     t: int64,
     position: int64,
     entry_price: float64,
     realized_pnl: float64,
+    flat_steps: int64,
+    hold_steps: int64,
     prices: np.ndarray,
     cfg: EnvConfig,
 ) -> tuple:
@@ -116,6 +120,7 @@ def _step_single(
     closed = False
     exec_price = 0.0
     pnl_trade = 0.0
+    penalty = 0.0
 
     allowed_side = cfg.mode  # допустимое направление торговли
 
@@ -140,14 +145,14 @@ def _step_single(
             position = 0
             entry_price = 0.0
             closed = True
-    elif action == 3:
+    # elif action == 3: -> Wait: ничего не делаем
         # Оставаться вне позиции (Wait)
-        if cfg.hold_penalty > 0.0:
-            realized_pnl -= cfg.hold_penalty
-    # action == 2 -> Hold: ничего не делаем
+    # elif action == 2 -> Hold: ничего не делаем
 
-    if prev_position != 0 and cfg.time_penalty > 0.0:
-        realized_pnl -= cfg.time_penalty
+    if position == 1 and cfg.hold_penalty > 0.0:
+        penalty -= np.sqrt(max(hold_steps-cfg.valid_time, 0)) * cfg.hold_penalty
+    if position == 0 and cfg.time_penalty > 0.0:
+        penalty -= np.sqrt(max(flat_steps-cfg.valid_time, 0)) * cfg.time_penalty
 
     # Нереализованный PnL после совершения действия
     unrealized = 0.0
@@ -162,14 +167,17 @@ def _step_single(
     # Возможность использовать логарифмическую доходность
     pnl_step = equity - prev_equity
     # Лог-вознаграждение: защищаемся от домена log1p (x > -1)
+    
     if cfg.use_log_reward:
         # Жёстко клипуем шаговую доходность снизу чуть выше -1
-        clipped = pnl_step if pnl_step > -0.999999 else -0.999999
-        core = np.log1p(clipped)
+        total = pnl_step + penalty
+        clipped = total if total > -0.999999 else -0.999999
+        core = np.log1p(total)
     else:
-        core = pnl_step
-
+        core = pnl_step + penalty
     reward = cfg.reward_scale * core
+
+    # print(f"POS {position} PNL {pnl_step} P {penalty} R {reward}")
 
     return (
         next_t,
@@ -257,6 +265,7 @@ class BacktestEnv:
             max_steps,
             cfg.reward_scale,
             cfg.use_log_reward,
+            cfg.valid_time,
             cfg.time_penalty,
             cfg.hold_penalty,
         )
@@ -358,6 +367,8 @@ class BacktestEnv:
             int64(self.position),
             float64(self.entry_price),
             float64(self.realized_pnl),
+            int64(self.flat_steps),
+            int64(self.hold_steps),
             self.prices,
             self.cfg,
         )
@@ -478,7 +489,7 @@ class BacktestEnv:
         log = self.logs()
 
         # Создаём четыре подграфика: цена, индикатор позиции, реализованный PnL и equity
-        fig, ax = plt.subplots(4, 1, sharex=True, figsize=(10, 8))
+        fig, ax = plt.subplots(5, 1, sharex=True, figsize=(10, 8))
         if title:
             fig.suptitle(title)
 
@@ -535,6 +546,23 @@ class BacktestEnv:
         ax[3].plot(log["t"], equity_curve, label="equity")
         ax[3].set_ylabel("Equity")
         ax[3].set_xlabel("Step")
+
+        # -----------------------------------------------------
+        # 4) Награда (reward)
+        # -----------------------------------------------------
+        reward = log["reward"]
+        cum_reward = np.cumsum(reward)
+        # основная ось
+        ax1 = ax[4]
+        ax1.plot(log["t"], reward, label="reward")
+        ax1.set_ylabel("Reward")
+
+        # вторая ось для cum_reward
+        ax2 = ax1.twinx()
+        ax2.plot(log["t"], cum_reward, label="cum_reward", color="orange")
+        ax2.set_ylabel("Cum_Reward")
+
+        ax1.set_xlabel("Step")
 
         # Отображаем легенду на каждом подграфике
         for a in ax:

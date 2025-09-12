@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
+import os
 
 from .dataset_builder import ACTIONS, NUM_CLASSES
 from .residual_lstm import (
@@ -385,8 +386,8 @@ def fit_model(
     onecycle_pct_start: float = 0.3,
     lr_restart_patience: int = 3,
     lr_restart_shrink: float = 0.5,
-    best_path: str = "best_lstm_weights.h5",
-    backbone_path: str | None = None,
+    best_weights_path: str = "",
+    save_backbone: bool = False,
 ):
     """Обучить ``model`` и вернуть историю в виде словаря.
 
@@ -412,7 +413,7 @@ def fit_model(
     else:
         optimizer = keras.optimizers.Adam(learning_rate=lr, clipnorm=grad_clip_norm)
 
-    if backbone_path is not None:
+    if save_backbone:
         try:
             backbone = keras.Model(
                 model.input,
@@ -500,13 +501,16 @@ def fit_model(
         history["val"]["oracle_ER"].append(float(va["oracle_ER"]))
         history["val"]["ER_ratio"].append(float(va["ER_ratio"]))
 
+        best_weights_full_model_path = os.path.join(best_weights_path, f"best_full_model_ep:{epoch+1}_f1:{va['macro_f1']*100:.1f}.weights.h5")
+        best_weights_backbone_path = os.path.join(best_weights_path, f"best_backbone__ep:{epoch+1}_f1:{va['macro_f1']*100:.1f}.weights.h5")
+
         if float(va['macro_f1']) > best_val - 1e-6:
             best_val = float(va['macro_f1'])
             no_improve = 0
             since_restart = 0
-            model.save_weights(best_path)
-            if backbone_path is not None:
-                backbone.save_weights(backbone_path)
+            model.save_weights(best_weights_full_model_path)
+            if save_backbone:
+                backbone.save_weights(best_weights_backbone_path)
         else:
             no_improve += 1
             since_restart += 1
@@ -523,14 +527,6 @@ def fit_model(
                     f"Early stopping: no improvement for {early_stopping_patience} epochs."
                 )
                 break
-
-    try:
-        model.load_weights(best_path)
-        if backbone_path is not None:
-            backbone.load_weights(backbone_path)
-        print(f"Restored best weights from {best_path}")
-    except Exception as e:  # pragma: no cover - best effort
-        print(f"Warning: could not restore best weights: {e}")
 
     return history
 
