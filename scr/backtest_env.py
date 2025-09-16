@@ -242,8 +242,14 @@ class BacktestEnv:
                 if c != price_col and np.issubdtype(df[c].dtypes, np.number)
             ]
         # Массив признаков и цен для быстрого доступа
+        self.signal = self.df['EMA_2500'].to_numpy(dtype=np.float32)
         self.features = self.df[feature_cols].to_numpy(dtype=np.float32)
         self.prices = self.df[price_col].to_numpy(dtype=np.float64)
+        self.closes = (
+            self.df["Close"].to_numpy(dtype=np.float64)
+            if "Close" in self.df.columns
+            else self.prices
+        )
         self.highs = (
             self.df["High"].to_numpy(dtype=np.float64)
             if "High" in self.df.columns
@@ -296,6 +302,16 @@ class BacktestEnv:
             return np.array([1, 0, 0, 1], dtype=np.int8)
         return np.array([0, 1, 1, 0], dtype=np.int8)
 
+    def filter_trades(self, t, period):
+
+        print(self.signal[t])
+        print(self.closes[t])
+        cond = [self.signal[t] > self.closes[t-i] for i in range(period)]
+        trade_permission = all(cond)
+        print(trade_permission)
+        print(cond)
+        return trade_permission
+
     def step(self, action, q_threshold: float | None = None) -> tuple:
         # Запрещаем шаги после завершения эпизода
         if getattr(self, "done", False):
@@ -340,6 +356,10 @@ class BacktestEnv:
                         action = int(np.nanargmax(logits))
             else:
                 action = 3 if self.position == 0 else 2
+
+        if self.filter_trades(self.t, 10):
+            action = 3 if self.position == 0 else 1
+
         # Валидация для скалярного действия
         if (
             not isinstance(action, (int, np.integer))
