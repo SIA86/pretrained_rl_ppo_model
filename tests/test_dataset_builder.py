@@ -203,6 +203,45 @@ def test_fit_transform_returns_indices():
     assert idx[0] == 19
 
 
+def test_fit_transform_train_valid_indices_filters_only_train():
+    df = _make_df(15)
+    builder_filtered = DatasetBuilderForYourColumns(
+        seq_len=2,
+        feature_cols=["f1", "f2"],
+        account_cols=["Pos", "un_pnl"],
+        norm="none",
+        splits=(0.7, 0.15, 0.15),
+    )
+    builder_baseline = DatasetBuilderForYourColumns(
+        seq_len=2,
+        feature_cols=["f1", "f2"],
+        account_cols=["Pos", "un_pnl"],
+        norm="none",
+        splits=(0.7, 0.15, 0.15),
+    )
+
+    train_valid_indices = np.array([3, 5, 9], dtype=np.int64)
+
+    filtered = builder_filtered.fit_transform(
+        df, return_indices=True, train_valid_indices=train_valid_indices
+    )
+    baseline = builder_baseline.fit_transform(df, return_indices=True)
+
+    Xtr, Ytr, Mtr, Wtr, Rtr, SWtr, idx_tr = filtered["train"]
+    assert Xtr.shape[0] == len(train_valid_indices)
+    assert Ytr.shape[0] == len(train_valid_indices)
+    assert np.array_equal(idx_tr, train_valid_indices)
+
+    for split_name in ("val", "test"):
+        filtered_split = filtered[split_name]
+        baseline_split = baseline[split_name]
+        for arr_filtered, arr_baseline in zip(filtered_split, baseline_split):
+            if arr_baseline is None:
+                assert arr_filtered is None
+            else:
+                assert np.array_equal(arr_filtered, arr_baseline)
+
+
 def test_class_balance_weights_excludes_unused_rows():
     n = 10
     classes = [0, 1, 2, 3, 0, 1, 0, 0, 1, 2]
