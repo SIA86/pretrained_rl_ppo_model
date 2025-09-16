@@ -540,4 +540,4 @@ def soft_signal_labels_gaussian(
     out["A_Hold"] = a_hold.astype(np.float32)
     out["A_Wait"] = a_wait.astype(np.float32)
 
-    return out.reset_index(drop=True)
+    return out
