@@ -143,6 +143,37 @@ def test_window_segment_drops_windows_with_invalid_last_mask():
     assert Yw.shape == (1, C) and Rw.shape == (1,)
 
 
+def test_window_segment_respects_valid_indices_and_offset():
+    N, D, C = 5, 2, 4
+    X = np.arange(N * D, dtype=np.float32).reshape(N, D)
+    Y = np.zeros((N, C), np.float32)
+    Y[:, 1] = 1.0
+    M = np.ones((N, C), dtype=np.float32)
+    W = np.ones((N, C), dtype=np.float32)
+    R = np.arange(N, dtype=np.float32)
+
+    valid_idx = np.array([6, 9], dtype=np.int64)
+    Xw, Yw, Mw, Ww, Rw, SWw, idx = _window_segment(
+        X,
+        Y,
+        M,
+        W,
+        R,
+        seq_len=2,
+        stride=1,
+        SW=None,
+        return_index=True,
+        start_offset=5,
+        valid_indices=valid_idx,
+    )
+
+    assert Xw.shape[0] == 2
+    assert Yw.shape == (2, C)
+    assert SWw is None
+    assert np.array_equal(idx, np.array([6, 9], dtype=np.int64))
+    assert np.allclose(Rw, np.array([1.0, 4.0], dtype=np.float32))
+
+
 def test_extract_features_excludes_Q_Mask_A_and_respects_drop():
     df = pd.DataFrame(
         {
