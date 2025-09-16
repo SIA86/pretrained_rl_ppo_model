@@ -19,6 +19,7 @@ from scr.indicators import (
     williams_r_numba,
     mfi_numba,
     roc_numba,
+    slope_numba,
     vwap_numba,
     zigzag_pivots_highlow_numba,
     expand_pivots,
@@ -89,10 +90,23 @@ def test_indicators_safety():
 
     assert_finite_or_nan(roc_numba(close, 12))
 
+    assert_finite_or_nan(slope_numba(close, 10))
+    assert np.all(np.isnan(slope_numba(close, 1)))
+
     assert_finite_or_nan(vwap_numba(high, low, close, volume, 20))
 
     piv = zigzag_pivots_highlow_numba(high, low, close, 0.05, -0.05)
     assert set(np.unique(piv)).issubset({PEAK, VALLEY, 0})
     exp = expand_pivots(piv, 2)
     assert set(np.unique(exp)).issubset({PEAK, VALLEY, 0})
+
+
+def test_slope_numba_linear_trend():
+    values = np.arange(20.0)
+    period = 5
+    res = slope_numba(values, period)
+    expected = 1.0 / np.sqrt((period * period - 1.0) / 12.0)
+    valid = res[period - 1:]
+    assert np.all(np.isfinite(valid))
+    assert np.allclose(valid, expected)
 
