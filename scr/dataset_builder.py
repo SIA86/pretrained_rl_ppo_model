@@ -217,6 +217,7 @@ def _window_segment(
     SW: Optional[np.ndarray] = None,
     return_index: bool = False,
     start_offset: int = 0,
+    valid_indices: Optional[np.ndarray] = None,
 ):
     assert X.ndim == 2 and Y.ndim == 2 and M.ndim == 2 and W.ndim == 2 and R.ndim == 1
     N, D = X.shape
@@ -253,7 +254,16 @@ def _window_segment(
     Rw = Rv[:, -1]
     SWw = None if SW is None else SWv[:, -1].astype(np.float32)
 
+    idx_end = idx[:, -1]
+    idx_end_global = idx_end + start_offset
+
     keep = Mw.sum(axis=1) > 0.0
+    if valid_indices is not None:
+        valid_idx = np.asarray(valid_indices, dtype=np.int64)
+        if valid_idx.size == 0:
+            keep = np.zeros_like(keep, dtype=bool)
+        else:
+            keep = keep & np.isin(idx_end_global, valid_idx)
     if keep.any():
         Xw = Xw[keep]
         Yw = Yw[keep]
@@ -263,7 +273,7 @@ def _window_segment(
         if SWw is not None:
             SWw = SWw[keep]
         if return_index:
-            idx_end = idx[:, -1][keep] + start_offset
+            idx_end = idx_end_global[keep]
     else:
         zX = np.empty((0, seq_len, D), np.float32)
         zC = np.empty((0, C), np.float32)
