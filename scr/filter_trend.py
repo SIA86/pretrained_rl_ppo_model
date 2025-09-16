@@ -112,7 +112,7 @@ def plot_price_with_valid(
 
         plt.figure(figsize=fig_size)
         plt.plot(segment_df.index, segment_df.values, linewidth=line_width)
-        plt.title(f"Участок {i}: {seg[0]} → {seg[-1]}")
+        plt.title(f"Участок {i}: {seg[0]} → {seg[-1]} Длина: {len(segment_df)}")
         plt.xlabel("Дата")
         plt.ylabel(price_col)
         plt.grid(True, axis="y", linestyle="--", linewidth=0.5, alpha=0.5)
