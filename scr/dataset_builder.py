@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Literal, Optional, Tuple
+from typing import List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -409,7 +409,13 @@ class DatasetBuilderForYourColumns:
     account_names: Optional[List[str]] = None
     invfreq_: Optional[np.ndarray] = None
 
-    def fit_transform(self, df: pd.DataFrame, return_indices: bool = False):
+    def fit_transform(
+        self,
+        df: pd.DataFrame,
+        return_indices: bool = False,
+        *,
+        train_valid_indices: Optional[Sequence[int]] = None,
+    ):
         X = df[self.feature_cols].to_numpy(np.float32)
         A = df[self.account_cols].to_numpy(np.float32)
         A[:] = 0 # заменяем все на нули, чтобы не подсказывать на обучении
@@ -459,7 +465,7 @@ class DatasetBuilderForYourColumns:
                 wmax=self.sw_clip_max,
             )
 
-        def cut(Xs, Ys, Ms, Ws, Rs, start, end):
+        def cut(Xs, Ys, Ms, Ws, Rs, start, end, valid_indices=None):
             kwargs = dict(
                 seq_len=self.seq_len,
                 stride=self.stride,
@@ -467,6 +473,8 @@ class DatasetBuilderForYourColumns:
                 return_index=return_indices,
                 start_offset=start,
             )
+            if valid_indices is not None:
+                kwargs["valid_indices"] = valid_indices
             return _window_segment(
                 Xs[start:end],
                 Ys[start:end],
@@ -476,7 +484,7 @@ class DatasetBuilderForYourColumns:
                 **kwargs,
             )
 
-        tr = cut(Xall, Y, M, W, R, s0, s1)
+        tr = cut(Xall, Y, M, W, R, s0, s1, valid_indices=train_valid_indices)
         va = cut(Xall, Y, M, W, R, s1, s2)
         te = cut(Xall, Y, M, W, R, s2, s3)
         if self.betta > 0.0:
