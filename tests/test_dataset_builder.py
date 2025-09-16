@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pathlib
+import pytest
 import sys
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
@@ -201,6 +202,102 @@ def test_fit_transform_returns_indices():
     Xte, _, _, _, _, _, idx = splits["test"]
     assert idx.shape[0] == Xte.shape[0]
     assert idx[0] == 19
+
+
+def test_fit_transform_train_valid_indices_filters_only_train():
+    df = _make_df(15)
+    dt_index = pd.date_range(
+        "2024-01-20 09:58:00+00:00",
+        periods=len(df),
+        freq="min",
+        tz="UTC",
+        name="datetime",
+    )
+    df = df.set_index(dt_index)
+
+    builder_filtered = DatasetBuilderForYourColumns(
+        seq_len=2,
+        feature_cols=["f1", "f2"],
+        account_cols=["Pos", "un_pnl"],
+        norm="none",
+        splits=(0.7, 0.15, 0.15),
+    )
+    builder_baseline = DatasetBuilderForYourColumns(
+        seq_len=2,
+        feature_cols=["f1", "f2"],
+        account_cols=["Pos", "un_pnl"],
+        norm="none",
+        splits=(0.7, 0.15, 0.15),
+    )
+
+    train_valid_indices = [
+        pd.DatetimeIndex(
+            [dt_index[1], dt_index[4], dt_index[9]],
+            name=dt_index.name,
+        ),
+        pd.DatetimeIndex(
+            [dt_index[11], dt_index[-1], dt_index[-1] + pd.Timedelta(minutes=1)],
+            name=dt_index.name,
+        ),
+    ]
+
+    filtered = builder_filtered.fit_transform(
+        df, return_indices=True, train_valid_indices=train_valid_indices
+    )
+    baseline = builder_baseline.fit_transform(df, return_indices=True)
+
+    Xtr, Ytr, Mtr, Wtr, Rtr, SWtr, idx_tr = filtered["train"]
+    expected_indices = np.array([1, 4, 9], dtype=np.int64)
+    assert Xtr.shape[0] == len(expected_indices)
+    assert Ytr.shape[0] == len(expected_indices)
+    assert np.array_equal(idx_tr, expected_indices)
+
+    for split_name in ("val", "test"):
+        filtered_split = filtered[split_name]
+        baseline_split = baseline[split_name]
+        for arr_filtered, arr_baseline in zip(filtered_split, baseline_split):
+            if arr_baseline is None:
+                assert arr_filtered is None
+            else:
+                assert np.array_equal(arr_filtered, arr_baseline)
+
+
+def test_fit_transform_train_valid_indices_requires_datetime_index():
+    df = _make_df(12)
+    builder = DatasetBuilderForYourColumns(
+        seq_len=2,
+        feature_cols=["f1", "f2"],
+        account_cols=["Pos", "un_pnl"],
+        norm="none",
+        splits=(0.7, 0.15, 0.15),
+    )
+    dt_index = pd.date_range("2024-01-01", periods=3, freq="min", tz="UTC")
+    train_valid_indices = [dt_index]
+
+    with pytest.raises(TypeError, match="DatetimeIndex"):
+        builder.fit_transform(df, train_valid_indices=train_valid_indices)
+
+
+def test_fit_transform_train_valid_indices_rejects_non_datetime_index():
+    df = _make_df(12)
+    dt_index = pd.date_range(
+        "2024-01-01 00:00:00+00:00",
+        periods=len(df),
+        freq="min",
+        tz="UTC",
+        name="datetime",
+    )
+    df = df.set_index(dt_index)
+    builder = DatasetBuilderForYourColumns(
+        seq_len=2,
+        feature_cols=["f1", "f2"],
+        account_cols=["Pos", "un_pnl"],
+        norm="none",
+        splits=(0.7, 0.15, 0.15),
+    )
+
+    with pytest.raises(TypeError, match="pandas.DatetimeIndex"):
+        builder.fit_transform(df, train_valid_indices=[pd.Index([1, 2, 3])])
 
 
 def test_class_balance_weights_excludes_unused_rows():

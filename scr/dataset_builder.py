@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Literal, Optional, Tuple
+from typing import List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -409,7 +409,13 @@ class DatasetBuilderForYourColumns:
     account_names: Optional[List[str]] = None
     invfreq_: Optional[np.ndarray] = None
 
-    def fit_transform(self, df: pd.DataFrame, return_indices: bool = False):
+    def fit_transform(
+        self,
+        df: pd.DataFrame,
+        return_indices: bool = False,
+        *,
+        train_valid_indices: Optional[Sequence[pd.DatetimeIndex]] = None,
+    ):
         X = df[self.feature_cols].to_numpy(np.float32)
         A = df[self.account_cols].to_numpy(np.float32)
         A[:] = 0 # заменяем все на нули, чтобы не подсказывать на обучении
@@ -435,6 +441,49 @@ class DatasetBuilderForYourColumns:
             Xn = self.stats_features.transform(X)
         Xall = np.concatenate([Xn, A], axis=1)
 
+        train_valid_positions: Optional[np.ndarray]
+        if train_valid_indices is None:
+            train_valid_positions = None
+        else:
+            if not isinstance(df.index, pd.DatetimeIndex):
+                raise TypeError(
+                    "train_valid_indices поддерживается только для DataFrame с DatetimeIndex"
+                )
+            if not isinstance(train_valid_indices, (list, tuple)):
+                raise TypeError(
+                    "train_valid_indices должен быть списком или кортежем объектов pandas.DatetimeIndex"
+                )
+
+            df_index: pd.DatetimeIndex = df.index  # type: ignore[assignment]
+            df_tz = df_index.tz
+            collected_positions = []
+            for idx in train_valid_indices:
+                if not isinstance(idx, pd.DatetimeIndex):
+                    raise TypeError(
+                        "train_valid_indices должен содержать только объекты pandas.DatetimeIndex"
+                    )
+
+                aligned_idx = idx
+                if df_tz != idx.tz:
+                    if idx.tz is None and df_tz is not None:
+                        aligned_idx = idx.tz_localize(df_tz)
+                    elif idx.tz is not None and df_tz is None:
+                        aligned_idx = idx.tz_convert(None)
+                    else:
+                        aligned_idx = idx.tz_convert(df_tz)
+
+                positions = df_index.get_indexer(aligned_idx)
+                if positions.size == 0:
+                    continue
+                valid_positions = positions[positions >= 0]
+                if valid_positions.size > 0:
+                    collected_positions.append(valid_positions.astype(np.int64, copy=False))
+
+            if collected_positions:
+                train_valid_positions = np.unique(np.concatenate(collected_positions))
+            else:
+                train_valid_positions = np.empty(0, dtype=np.int64)
+
         SW_full = None
         if self.sw_mode is not None:
             if self.sw_mode == "R":
@@ -459,7 +508,7 @@ class DatasetBuilderForYourColumns:
                 wmax=self.sw_clip_max,
             )
 
-        def cut(Xs, Ys, Ms, Ws, Rs, start, end):
+        def cut(Xs, Ys, Ms, Ws, Rs, start, end, valid_indices=None):
             kwargs = dict(
                 seq_len=self.seq_len,
                 stride=self.stride,
@@ -467,6 +516,8 @@ class DatasetBuilderForYourColumns:
                 return_index=return_indices,
                 start_offset=start,
             )
+            if valid_indices is not None:
+                kwargs["valid_indices"] = valid_indices
             return _window_segment(
                 Xs[start:end],
                 Ys[start:end],
@@ -476,7 +527,7 @@ class DatasetBuilderForYourColumns:
                 **kwargs,
             )
 
-        tr = cut(Xall, Y, M, W, R, s0, s1)
+        tr = cut(Xall, Y, M, W, R, s0, s1, valid_indices=train_valid_positions)
         va = cut(Xall, Y, M, W, R, s1, s2)
         te = cut(Xall, Y, M, W, R, s2, s3)
         if self.betta > 0.0:
