@@ -400,6 +400,53 @@ def roc_numba(close, period=12):
 
 
 @njit(cache=False)
+def slope_numba(values, period):
+    n = values.shape[0]
+    out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        out[i] = np.nan
+    if period <= 1 or period > n:
+        return out
+
+    period_f = float(period)
+    sum_x = 0.5 * period_f * (period_f - 1.0)
+    sum_x2 = (period_f - 1.0) * period_f * (2.0 * period_f - 1.0) / 6.0
+    denom = period_f * sum_x2 - sum_x * sum_x
+
+    sum_y = 0.0
+    sum_y2 = 0.0
+    sum_xy = 0.0
+    for k in range(period):
+        v = values[k]
+        sum_y += v
+        sum_y2 += v * v
+        sum_xy += k * v
+
+    mean_y = sum_y / period_f
+    var_y = (sum_y2 / period_f) - mean_y * mean_y
+    std_y = np.sqrt(var_y) if var_y > 0.0 else 0.0
+    slope = (period_f * sum_xy - sum_x * sum_y) / denom
+    out[period - 1] = slope / std_y if std_y > 0.0 else np.nan
+
+    for end in range(period, n):
+        y_out = values[end - period]
+        y_in = values[end]
+
+        sum_y_prev = sum_y
+        sum_y = sum_y_prev - y_out + y_in
+        sum_y2 = sum_y2 - y_out * y_out + y_in * y_in
+        sum_xy = sum_xy - (sum_y_prev - y_out) + (period_f - 1.0) * y_in
+
+        mean_y = sum_y / period_f
+        var_y = (sum_y2 / period_f) - mean_y * mean_y
+        std_y = np.sqrt(var_y) if var_y > 0.0 else 0.0
+        slope = (period_f * sum_xy - sum_x * sum_y) / denom
+        out[end] = slope / std_y if std_y > 0.0 else np.nan
+
+    return out
+
+
+@njit(cache=False)
 def vwap_numba(high, low, close, volume, period=20):
     n = close.shape[0]
     tp = (high + low + close) / 3.0
