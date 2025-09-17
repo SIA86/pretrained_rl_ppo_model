@@ -416,32 +416,68 @@ def slope_numba(values, period):
     sum_y = 0.0
     sum_y2 = 0.0
     sum_xy = 0.0
+    nan_count = 0
     for k in range(period):
         v = values[k]
-        sum_y += v
-        sum_y2 += v * v
-        sum_xy += k * v
+        if np.isnan(v):
+            nan_count += 1
+        else:
+            sum_y += v
+            sum_y2 += v * v
+            sum_xy += k * v
 
-    mean_y = sum_y / period_f
-    var_y = (sum_y2 / period_f) - mean_y * mean_y
-    std_y = np.sqrt(var_y) if var_y > 0.0 else 0.0
-    slope = (period_f * sum_xy - sum_x * sum_y) / denom
-    out[period - 1] = slope / std_y if std_y > 0.0 else np.nan
+    if nan_count == 0:
+        mean_y = sum_y / period_f
+        var_y = (sum_y2 / period_f) - mean_y * mean_y
+        if var_y > 0.0:
+            std_y = np.sqrt(var_y)
+            slope = (period_f * sum_xy - sum_x * sum_y) / denom
+            out[period - 1] = slope / std_y
+        else:
+            out[period - 1] = np.nan
+        needs_reset = False
+    else:
+        out[period - 1] = np.nan
+        needs_reset = True
 
     for end in range(period, n):
         y_out = values[end - period]
         y_in = values[end]
 
-        sum_y_prev = sum_y
-        sum_y = sum_y_prev - y_out + y_in
-        sum_y2 = sum_y2 - y_out * y_out + y_in * y_in
-        sum_xy = sum_xy - (sum_y_prev - y_out) + (period_f - 1.0) * y_in
+        if np.isnan(y_out):
+            nan_count -= 1
+        if np.isnan(y_in):
+            nan_count += 1
 
-        mean_y = sum_y / period_f
-        var_y = (sum_y2 / period_f) - mean_y * mean_y
-        std_y = np.sqrt(var_y) if var_y > 0.0 else 0.0
-        slope = (period_f * sum_xy - sum_x * sum_y) / denom
-        out[end] = slope / std_y if std_y > 0.0 else np.nan
+        if nan_count == 0:
+            if needs_reset:
+                sum_y = 0.0
+                sum_y2 = 0.0
+                sum_xy = 0.0
+                start = end - period + 1
+                for k in range(period):
+                    v = values[start + k]
+                    sum_y += v
+                    sum_y2 += v * v
+                    sum_xy += k * v
+            else:
+                sum_y_prev = sum_y
+                sum_y = sum_y_prev - y_out + y_in
+                sum_y2 = sum_y2 - y_out * y_out + y_in * y_in
+                sum_xy = sum_xy - (sum_y_prev - y_out) + (period_f - 1.0) * y_in
+
+            mean_y = sum_y / period_f
+            var_y = (sum_y2 / period_f) - mean_y * mean_y
+            if var_y > 0.0:
+                std_y = np.sqrt(var_y)
+                slope = (period_f * sum_xy - sum_x * sum_y) / denom
+                out[end] = slope / std_y
+            else:
+                out[end] = np.nan
+            needs_reset = False
+        else:
+            out[end] = np.nan
+            needs_reset = True
 
     return out
 
