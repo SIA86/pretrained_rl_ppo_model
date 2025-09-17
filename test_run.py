@@ -37,7 +37,7 @@ def main() -> None:
     backbone = build_backbone(
         seq_len=5,
         feature_dim=len(builder.feature_names) + len(builder.account_names),
-        units_per_layer=(8, 8),
+        units=8,
     )
     model = build_head(backbone, NUM_CLASSES)
     fit_model(
@@ -79,7 +79,7 @@ def main() -> None:
         backbone_weights="sl_weights/best_backbone.weights.h5",
         save_path="ppo_weights",
         num_actions=4,
-        units_per_layer=[8, 8],
+        units=8,
         dropout=0.2,
         updates=1,
         n_env=1,

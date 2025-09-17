@@ -50,7 +50,7 @@ DEFAULT_CONFIG = EnvConfig(
     max_steps=10**9,  # практически бесконечный эпизод
     reward_scale=1.0,  # без масштабирования вознаграждения
     use_log_reward=False,  # линейная доходность
-    valid_time=5,
+    valid_time=0,
     time_penalty=0.0,  # нет штрафа за удержание
     hold_penalty=0.0,  # нет штрафа за бездействие
 )
@@ -149,10 +149,14 @@ def _step_single(
         # Оставаться вне позиции (Wait)
     # elif action == 2 -> Hold: ничего не делаем
 
-    if position == 1 and cfg.hold_penalty > 0.0:
-        penalty -= np.sqrt(max(hold_steps-cfg.valid_time, 0)) * cfg.hold_penalty
-    if position == 0 and cfg.time_penalty > 0.0:
-        penalty -= np.sqrt(max(flat_steps-cfg.valid_time, 0)) * cfg.time_penalty
+    if position != 0 and cfg.time_penalty > 0.0:
+        eff_hold = hold_steps
+        penalty -= np.sqrt(max(eff_hold - cfg.valid_time, 0)) * cfg.time_penalty
+    if position == 0 and cfg.hold_penalty > 0.0:
+        eff_flat = flat_steps + 1
+        penalty -= np.sqrt(max(eff_flat - cfg.valid_time, 0)) * cfg.hold_penalty
+    if penalty != 0.0:
+        realized_pnl += penalty
 
     # Нереализованный PnL после совершения действия
     unrealized = 0.0
@@ -167,14 +171,13 @@ def _step_single(
     # Возможность использовать логарифмическую доходность
     pnl_step = equity - prev_equity
     # Лог-вознаграждение: защищаемся от домена log1p (x > -1)
-    
+
     if cfg.use_log_reward:
         # Жёстко клипуем шаговую доходность снизу чуть выше -1
-        total = pnl_step + penalty
-        clipped = total if total > -0.999999 else -0.999999
-        core = np.log1p(total)
+        clipped = pnl_step if pnl_step > -0.999999 else -0.999999
+        core = np.log1p(clipped)
     else:
-        core = pnl_step + penalty
+        core = pnl_step
     reward = cfg.reward_scale * core
 
     # print(f"POS {position} PNL {pnl_step} P {penalty} R {reward}")
@@ -206,7 +209,8 @@ class BacktestEnv:
         feature_cols: Optional[List[str]] = None,
         price_col: str = "close",
         cfg: EnvConfig = DEFAULT_CONFIG,
-        ppo_true: bool = False
+        ppo_true: bool = False,
+        record_history: Optional[bool] = None,
     ):
         """Подготовка данных и настройка параметров среды.
 
@@ -223,6 +227,11 @@ class BacktestEnv:
             Объект конфигурации среды.
         """
         self.ppo = ppo_true
+        self.record_history = (
+            bool(record_history) if record_history is not None else not ppo_true
+        )
+        self._state_buffer = np.zeros(5, dtype=np.float32)
+        self._zero_state = np.zeros_like(self._state_buffer)
         orig_index = df.index
         # Сбрасываем индекс, чтобы шаги шли от 0
         self.df = df.reset_index(drop=True)
@@ -291,7 +300,8 @@ class BacktestEnv:
         self.drawdown = 0.0  # текущая просадка
         self.worst_price = self.prices[0]
         self.done = False  # флаг завершения эпизода
-        self.history: List[Dict] = []  # журнал событий
+        self.history = [] if self.record_history else []  # журнал событий
+        self._state_buffer.fill(0.0)
         return self._get_obs()
 
     def action_mask(self) -> np.ndarray:
@@ -429,25 +439,26 @@ class BacktestEnv:
                 )
                 self.drawdown = self.entry_price / self.worst_price - 1.0
 
-        self.history.append(
-            {
-                "t": self.t,
-                "price": price,
-                "position": self.position,
-                "entry_price": self.entry_price,
-                "reward": reward,
-                "equity": self.equity,
-                "realized_pnl": self.realized_pnl,
-                "unrealized_pnl": self.unrealized_pnl,
-                "flat_steps": self.flat_steps,
-                "hold_steps": self.hold_steps,
-                "drawdown": self.drawdown,
-                "opened": opened,
-                "closed": closed,
-                "exec_price": exec_price,
-                "pnl_trade": pnl_trade,
-            }
-        )
+        if self.record_history:
+            self.history.append(
+                {
+                    "t": self.t,
+                    "price": price,
+                    "position": self.position,
+                    "entry_price": self.entry_price,
+                    "reward": reward,
+                    "equity": self.equity,
+                    "realized_pnl": self.realized_pnl,
+                    "unrealized_pnl": self.unrealized_pnl,
+                    "flat_steps": self.flat_steps,
+                    "hold_steps": self.hold_steps,
+                    "drawdown": self.drawdown,
+                    "opened": opened,
+                    "closed": closed,
+                    "exec_price": exec_price,
+                    "pnl_trade": pnl_trade,
+                }
+            )
 
         obs = self._get_obs()
         info = {
@@ -464,29 +475,16 @@ class BacktestEnv:
 
     def _get_state(self) -> np.ndarray:
         if not self.ppo:
-            state = np.array(
-                [
-                    float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
-                    float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
-                    float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
-                    float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
-                    float(0), # хардкодим 0, так как обучались без pos, но нужен резерв для PPO
-                ],
-                dtype=np.float32,
-            )
-        else:
-            state = np.array(
-                [
-                    float(self.position),
-                    float(self.unrealized_pnl),
-                    float(self.flat_steps) / 1000.0,
-                    float(self.hold_steps) / 1000.0,
-                    float(self.drawdown),
-                ],
-                dtype=np.float32,
-            )
+            return self._zero_state
 
-        return state
+        self._state_buffer[...] = (
+            float(self.position),
+            float(self.unrealized_pnl),
+            float(self.flat_steps) / 1000.0,
+            float(self.hold_steps) / 1000.0,
+            float(self.drawdown),
+        )
+        return self._state_buffer
 
     def _get_obs(self) -> Dict[str, np.ndarray]:
         return {"features": self.features[self.t], "state": self._get_state()}
@@ -496,6 +494,8 @@ class BacktestEnv:
     # ---------------------------------------------------------
     def logs(self) -> pd.DataFrame:
         """Преобразовать журнал событий в DataFrame."""
+        if not self.record_history:
+            raise RuntimeError("History logging disabled for this environment")
         return pd.DataFrame(self.history)
 
     def save_logs(self, path: str):
@@ -646,6 +646,7 @@ class BacktestEnv:
 
         return {
             "Realized PnL": float(round(realized_pnl, 4)),
+            "Equity": float(round(equity, 4)),
             "Annual Return": float(round(ann_return, 4)),
             "Sharpe Ratio": float(round(sharpe, 4)),
             "Sortino Ratio": float(round(sortino, 4)),
@@ -724,10 +725,10 @@ def run_backtest_with_logits(
         ppo_true=False
     )
     env.reset()
-    state_hist = [env._get_state()]
+    state_hist = [env._get_state().copy()]
     for _ in range(seq_len - 1):
         env.step(3)
-        state_hist.append(env._get_state())
+        state_hist.append(env._get_state().copy())
 
     if isinstance(model, tf.Module):
 
@@ -756,6 +757,6 @@ def run_backtest_with_logits(
         inputs = np.concatenate([window, state_window], axis=1) #state_window
         logits = predict(inputs[None, :, :])
         env.step(np.asarray(logits).reshape(-1), q_threshold=q_threshold)
-        state_hist.append(env._get_state())
+        state_hist.append(env._get_state().copy())
 
     return env

@@ -215,9 +215,7 @@ def test_train_freeze_backbones(tmp_path):
     seq_len = 1
     feature_dim = len(feat_cols) + 5
     weight_path = tmp_path / "weights.weights.h5"
-    backbone = build_backbone(
-        seq_len, feature_dim, units_per_layer=[64, 32], dropout=0.5
-    )
+    backbone = build_backbone(seq_len, feature_dim, units=64, dropout=0.5)
     model = build_head(backbone, 4)
     model.save_weights(weight_path)
     actor, critic, _, _ = train(
@@ -233,7 +231,7 @@ def test_train_freeze_backbones(tmp_path):
         backbone_weights=str(weight_path),
         save_path=str(tmp_path),
         num_actions=4,
-        units_per_layer=[64, 32],
+        units=64,
         dropout=0.5,
         updates=1,
         n_env=1,

@@ -53,7 +53,7 @@ def test_full_pipeline(tmp_path):
     backbone = build_backbone(
         seq_len=5,
         feature_dim=len(builder.feature_names) + len(builder.account_names),
-        units_per_layer=(8, 8),
+        units=8,
     )
     model = build_head(backbone, NUM_CLASSES)
 

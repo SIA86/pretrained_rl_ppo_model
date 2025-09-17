@@ -18,7 +18,7 @@ from scr.residual_lstm import (
 
 
 def test_model_output_shape_and_inputs():
-    backbone = build_backbone(seq_len=5, feature_dim=5, units_per_layer=(4, 4))
+    backbone = build_backbone(seq_len=5, feature_dim=5, units=4)
     model = build_head(backbone, num_classes=4)
     assert len(model.inputs) == 1
     x = tf.random.normal((2, 5, 5))
