@@ -65,6 +65,18 @@ class Trajectory:
     masks: np.ndarray
 
 
+@dataclass
+class EvalCacheEntry:
+    env: BacktestEnv
+    metrics: Dict[str, float]
+
+
+def _format_metric_value(value: float | int | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.4f}"
+
+
 def prepare_datasets(
     df: pd.DataFrame,
     feature_cols: List[str],
@@ -629,7 +641,7 @@ def train(
 
     # Инициализируем коэффициент KL и параметры ранней остановки
     kl_coef = teacher_kl
-    best_profit = -np.inf
+    best_profit: Optional[float] = None
 
     train_log: List[Dict[str, float]] = []
     val_log: List[Dict[str, float]] = []
@@ -644,21 +656,9 @@ def train(
             s = int(np.random.choice(val_starts))
             val_windows.append(val_df.iloc[s : s + needed + 1])
 
-    for window_df in val_windows:
-        teacher_env = BacktestEnv(
-            window_df, 
-            feature_cols=feature_cols,
-            cfg=val_cfg, 
-            price_col='Open', 
-            ppo_true=True
-        )
-    
-        print("Teacher policy")
-        teacher_metrics = evaluate_profit(teacher_env, teacher, seq_len, feature_dim, debug=debug)
-        fig = teacher_env.plot("PPO teacher")
-        print(f"\nEvaluate profit:")
-        for k,v in teacher_metrics.items():
-            print(f"{k}: {v}")
+    baseline_name = "Teacher"
+    baseline_cache: List[EvalCacheEntry] | None = None
+    pending_baseline: Optional[Tuple[str, List[EvalCacheEntry]]] = None
 
     for step in range(updates):
         # Сбор траекторий и обновление параметров
@@ -705,37 +705,71 @@ def train(
                 print(f"{k}: {v:.5f}")
 
         # Периодически оцениваем политику на валидационном наборе
-        val_env_profits = []
-
         if (step + 1) % val_interval == 0:
-            for window_df in val_windows:
+            if pending_baseline is not None:
+                baseline_name, baseline_cache = pending_baseline
+                pending_baseline = None
+
+            if baseline_cache is None:
+                if baseline_name != "Teacher":
+                    raise RuntimeError("Baseline cache is empty for champion")
+                baseline_cache = []
+                baseline_profits: List[float] = []
+                for window_df in val_windows:
+                    base_env = BacktestEnv(
+                        window_df,
+                        feature_cols=feature_cols,
+                        cfg=val_cfg,
+                        price_col='Open',
+                        ppo_true=True
+                    )
+                    base_metrics = evaluate_profit(
+                        base_env, teacher, seq_len, feature_dim, debug=debug
+                    )
+                    baseline_cache.append(EvalCacheEntry(env=base_env, metrics=base_metrics))
+                    baseline_profits.append(base_metrics.get("Realized PnL", 0.0))
+                if baseline_profits:
+                    best_profit = float(np.mean(baseline_profits))
+
+            val_env_profits: List[float] = []
+            current_eval_cache: List[EvalCacheEntry] = []
+            for idx, window_df in enumerate(val_windows):
+                baseline_entry = baseline_cache[idx]
+                baseline_entry.env.plot(f"PPO {baseline_name.lower()}")
                 val_env = BacktestEnv(
-                    window_df, 
+                    window_df,
                     feature_cols=feature_cols,
-                    cfg=val_cfg, 
-                    price_col='Open', 
+                    cfg=val_cfg,
+                    price_col='Open',
                     ppo_true=True
                 )
-        
+
                 val_metrics = evaluate_profit(val_env, actor, seq_len, feature_dim, debug=debug)
-                fig = val_env.plot("PPO validation")
-                print(f"\nEvaluate_profit:")
-                for k,v in val_metrics.items():
-                  print(f"{k}: {v}")
-                
+                val_env.plot("PPO validation")
+                print("\nMetrics:")
+                metric_keys = sorted(set(baseline_entry.metrics) | set(val_metrics))
+                for key in metric_keys:
+                    base_val = baseline_entry.metrics.get(key)
+                    model_val = val_metrics.get(key)
+                    print(
+                        f"{key}: {_format_metric_value(base_val)} / {_format_metric_value(model_val)}"
+                    )
+
                 val_log.append(val_metrics)
                 val_env_profits.append(val_metrics.get("Realized PnL", 0.0))
+                current_eval_cache.append(EvalCacheEntry(env=val_env, metrics=val_metrics))
 
             avg_profit = np.mean(np.array(val_env_profits))
 
             best_actor_path = os.path.join(save_path, f"actor_best_ep:{step+1}_rt:{avg_profit:.4f}.weights.h5")
             best_critic_path = os.path.join(save_path, f"critic_best_ep:{step+1}_rt{avg_profit:.4f}.weights.h5")
-            
-            if avg_profit > best_profit:
+
+            if best_profit is None or avg_profit > best_profit:
                 print(f"\nНайден новый чемпион. Средний профит на валидации: {avg_profit:.5f}")
                 best_profit = avg_profit
                 actor.save_weights(best_actor_path)
                 critic.save_weights(best_critic_path)
+                pending_baseline = ("Champion", current_eval_cache)
 
 
     actor.save_weights(os.path.join(save_path, "actor_final.weights.h5"))
