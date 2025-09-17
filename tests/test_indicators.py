@@ -101,6 +101,40 @@ def test_indicators_safety():
     assert set(np.unique(exp)).issubset({PEAK, VALLEY, 0})
 
 
+def test_slope_numba_nan_handling():
+    values = np.array(
+        [
+            np.nan,
+            np.nan,
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            6.0,
+            np.nan,
+            8.0,
+            9.0,
+            10.0,
+            11.0,
+        ],
+        dtype=np.float64,
+    )
+    period = 3
+    res = slope_numba(values, period)
+
+    assert np.isnan(res[0])
+    assert np.isnan(res[1])
+    assert np.isnan(res[2])
+    assert np.isnan(res[3])
+    assert np.isfinite(res[4])
+
+    assert np.isnan(res[7])
+    assert np.isnan(res[8])
+    assert np.isnan(res[9])
+    assert np.isfinite(res[10])
+    assert np.isfinite(res[11])
+
+
 def test_slope_numba_linear_trend():
     values = np.arange(20.0)
     period = 5
