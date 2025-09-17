@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Dict, List
+import shutil
+import tempfile
+from typing import Dict
 
 import optuna
 import tensorflow as tf
@@ -39,22 +41,18 @@ def optimize_hyperparameters(
     Returns
     -------
     Dict[str, object]
-        Лучшие гиперпараметры: ``units_per_layer``, ``dropout`` и ``lr``.
+        Лучшие гиперпараметры: ``units``, ``dropout`` и ``lr``.
     """
 
     def objective(trial: Trial) -> float:
-        units = [
-            trial.suggest_int("units_l1", 32, 256, step=32),
-            trial.suggest_int("units_l2", 32, 256, step=32),
-            trial.suggest_int("units_l3", 32, 256, step=32),
-        ]
+        units = trial.suggest_int("units", 32, 256, step=32)
         dropout = trial.suggest_float("dropout", 0.1, 0.5)
         lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
 
         backbone = build_backbone(
             seq_len=seq_len,
             feature_dim=feature_dim + acc_dim,
-            units_per_layer=units,
+            units=units,
             dropout=dropout,
         )
         model = build_head(backbone, NUM_CLASSES)
@@ -71,17 +69,21 @@ def optimize_hyperparameters(
         train_merged = _merge(train_ds)
         val_merged = _merge(val_ds)
 
-        history = fit_model(
-            model,
-            train_merged,
-            val_merged,
-            epochs=epochs,
-            lr=lr,
-            early_stopping_patience=1,
-            lr_mode=None,
-            best_path="best_lstm.weights.h5",
-            backbone_path="best_backbone.weights.h5",
-        )
+        best_dir = tempfile.mkdtemp(prefix="optuna_lstm_")
+        try:
+            history = fit_model(
+                model,
+                train_merged,
+                val_merged,
+                epochs=epochs,
+                lr=lr,
+                early_stopping_patience=1,
+                lr_mode=None,
+                best_weights_path=best_dir,
+                save_backbone=False,
+            )
+        finally:
+            shutil.rmtree(best_dir, ignore_errors=True)
 
         return float(history["val"]["loss"][-1])
 
@@ -91,9 +93,4 @@ def optimize_hyperparameters(
     study.optimize(objective, n_trials=n_trials)
 
     best = study.best_params
-    best_units: List[int] = [best["units_l1"], best["units_l2"], best["units_l3"]]
-    return {
-        "units_per_layer": best_units,
-        "dropout": best["dropout"],
-        "lr": best["lr"],
-    }
+    return {"units": best["units"], "dropout": best["dropout"], "lr": best["lr"]}

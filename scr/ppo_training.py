@@ -9,7 +9,7 @@ teacher‑модели с затухающим коэффициентом и р�
 from __future__ import annotations
 
 import os
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -34,16 +34,14 @@ def build_critic(
     feature_dim: int,
     *,
     num_actions: int,
-    units_per_layer: List[int],
+    units: int,
     dropout: float,
     backbone_weights: str | None = None,
     freeze_backbone: bool = False,
 ) -> keras.Model:
     """Создать критика и при необходимости заморозить его бэкбон."""
     # Создаём бэкбон критика
-    critic_backbone = build_backbone(
-        seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
-    )
+    critic_backbone = build_backbone(seq_len, feature_dim, units=units, dropout=dropout)
     # При необходимости загружаем предобученные веса бэкбона
     if backbone_weights:
         critic_backbone.load_weights(backbone_weights)
@@ -120,18 +118,6 @@ def prepare_datasets(
     return train_df, val_df, test_df, feat_stats
 
 
-def _env_step(args: Tuple[BacktestEnv, int]) -> Tuple[BacktestEnv, Dict[str, np.ndarray], float, bool]:
-    """Помощник для параллельного шага среды.
-
-    Принимает пару (env, action), выполняет ``env.step(action)`` и возвращает
-    обновлённую среду, наблюдение, награду и флаг завершения.
-    """
-
-    env, action = args
-    next_obs, reward, done, _ = env.step(int(action))
-    return env, next_obs, reward, done
-
-
 def collect_trajectories(
     train_df: pd.DataFrame,
     actor: keras.Model,
@@ -147,15 +133,8 @@ def collect_trajectories(
     lam: float = 0.95,
     debug: bool = False,
 ) -> Trajectory:
-    """Собрать батч траекторий из ``n_env`` сред с пересэмплингом окон.
+    """Собрать батч траекторий из ``n_env`` сред с пересэмплингом окон."""
 
-    Parameters
-    ----------
-    index_ranges : list of tuples, optional
-        Список допустимых диапазонов ``(start_index, length)`` для выбора стартовых
-        индексов. ``length`` должен быть не меньше ``max(cfg.max_steps + seq_len, rollout)``.
-        Если не задано, используется весь диапазон ``train_df``.
-    """
     L = cfg.max_steps + 1
     needed = max(cfg.max_steps + seq_len, rollout)
     if debug:
@@ -185,7 +164,8 @@ def collect_trajectories(
         print(f"Valid Indexes length :{len(starts)}")
 
     envs: List[BacktestEnv] = []
-    state_hists: List[List[np.ndarray]] = []
+    state_dim: Optional[int] = None
+    feature_dim_total: Optional[int] = None
     for _ in range(n_env):
         s = int(np.random.choice(starts))
         window_df = train_df.iloc[s : s + L].reset_index(drop=True)
@@ -194,17 +174,28 @@ def collect_trajectories(
             feature_cols=feature_cols,
             price_col="Open",
             cfg=cfg,
-            ppo_true=True
+            ppo_true=True,
+            record_history=False,
         )
         obs = env.reset()
-        hist = [obs["state"]]
+        if state_dim is None:
+            state_dim = int(obs["state"].shape[0])
+        if feature_dim_total is None:
+            feature_dim_total = int(env.features.shape[1])
         for _ in range(seq_len - 1):
             obs, _, done, _ = env.step(3)
-            hist.append(obs["state"])
             if done:
                 break
         envs.append(env)
-        state_hists.append(hist)
+
+    if state_dim is None or feature_dim_total is None:
+        raise RuntimeError("Failed to initialise PPO environments")
+
+    state_buf = np.zeros((n_env, seq_len, state_dim), dtype=np.float32)
+    feat_buf = np.zeros(
+        (n_env, seq_len, feature_dim_total + state_dim), dtype=np.float32
+    )
+    mask_batch = np.zeros((n_env, num_actions), dtype=np.float32)
 
     obs_buf = [[] for _ in range(n_env)]
     act_buf = [[] for _ in range(n_env)]
@@ -215,99 +206,112 @@ def collect_trajectories(
     mask_buf = [[] for _ in range(n_env)]
     done_buf = [[] for _ in range(n_env)]
 
-    with ProcessPoolExecutor(max_workers=min(n_env, os.cpu_count() or 1)) as pool:
+    @tf.function
+    def _infer(obs_batch: tf.Tensor, mask_batch: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+        logits = actor(obs_batch, training=False)
+        values = critic(obs_batch, training=False)[:, 0]
+        _, probs = masked_logits_and_probs(logits, mask_batch)
+        return probs, values
+
+    @tf.function
+    def _critic(obs_batch: tf.Tensor) -> tf.Tensor:
+        values = critic(obs_batch, training=False)[:, 0]
+        return values
+
+    def _reset_env(idx: int):
+        s = int(np.random.choice(starts))
+        window_df = train_df.iloc[s : s + L].reset_index(drop=True)
+        env = BacktestEnv(
+            window_df,
+            feature_cols=feature_cols,
+            price_col="Open",
+            cfg=cfg,
+            ppo_true=True,
+            record_history=False,
+        )
+        obs = env.reset()
+        states = [obs["state"].copy()]
+        for _ in range(seq_len - 1):
+            obs, _, done, _ = env.step(3)
+            states.append(obs["state"].copy())
+            if done:
+                break
+        envs[idx] = env
+        state_buf[idx].fill(0.0)
+        if states:
+            state_buf[idx, -len(states) :] = states
+
+    for i in range(n_env):
+        _reset_env(i)
+
+    executor = ThreadPoolExecutor(max_workers=min(n_env, os.cpu_count() or 1))
+    try:
         for _ in range(rollout):
-            feats: List[np.ndarray] = []
-            masks: List[np.ndarray] = []
-            actions: List[int] = []
-            logps: List[float] = []
-            values: List[float] = []
             for i, env in enumerate(envs):
                 if env.done:
-                    s = int(np.random.choice(starts))
-                    window_df = train_df.iloc[s : s + L].reset_index(drop=True)
-                    env = BacktestEnv(
-                        window_df,
-                        feature_cols=feature_cols,
-                        price_col="Open",
-                        cfg=cfg,
-                        ppo_true=True
-                    )
-                    obs = env.reset()
-                    hist = [obs["state"]]
-                    for _ in range(seq_len - 1):
-                        obs, _, done, _ = env.step(3)
-                        hist.append(obs["state"])
-                        if done:
-                            break
-                    envs[i] = env
-                    state_hists[i] = hist
-
+                    _reset_env(i)
                 t = env.t
                 window = env.features[t - seq_len + 1 : t + 1]
-                state_window = np.stack(state_hists[i][t - seq_len + 1 : t + 1])
-                feat = np.concatenate([window, state_window], axis=1)
-                mask = env.action_mask()
-                logits = actor(feat[None, ...], training=False)
-                _, probs_tf = masked_logits_and_probs(logits, mask[None, :])
-                probs = probs_tf.numpy()[0]
+                feat_buf[i, :, :feature_dim_total] = window
+                feat_buf[i, :, feature_dim_total:] = state_buf[i]
+                mask_batch[i] = env.action_mask().astype(np.float32)
+
+            probs_tf, values_tf = _infer(
+                tf.convert_to_tensor(feat_buf), tf.convert_to_tensor(mask_batch)
+            )
+            probs_np = probs_tf.numpy()
+            values_np = values_tf.numpy()
+
+            actions: List[int] = []
+            logps: List[float] = []
+            for i in range(n_env):
+                probs = probs_np[i]
+                mask = mask_batch[i]
                 if not np.isfinite(probs).all() or probs.sum() <= 0.0:
                     valid_actions = np.flatnonzero(mask)
                     probs = np.zeros(num_actions, dtype=np.float32)
                     probs[valid_actions] = 1.0 / len(valid_actions)
                 action = int(np.random.choice(num_actions, p=probs))
-                logp = float(np.log(probs[action] + 1e-8))
-                value = float(critic(feat[None, ...], training=False).numpy()[0, 0])
-                feats.append(feat)
-                masks.append(mask.astype(np.float32))
                 actions.append(action)
-                logps.append(logp)
-                values.append(value)
+                logps.append(float(np.log(probs[action] + 1e-8)))
 
-            results = list(pool.map(_env_step, zip(envs, actions)))
-            for i, (env, next_obs, reward, done) in enumerate(results):
-                envs[i] = env
-                state_hists[i].append(next_obs["state"])
-                if done:
-                    next_value = 0.0
-                else:
-                    t2 = env.t
-                    window2 = env.features[t2 - seq_len + 1 : t2 + 1]
-                    state_window2 = np.stack(
-                        state_hists[i][t2 - seq_len + 1 : t2 + 1]
-                    )
-                    feat2 = np.concatenate([window2, state_window2], axis=1)
-                    next_value = float(
-                        critic(feat2[None, ...], training=False).numpy()[0, 0]
-                    )
+            futures = [
+                executor.submit(env.step, int(action))
+                for env, action in zip(envs, actions)
+            ]
 
-                obs_buf[i].append(feats[i])
+            next_indices: List[int] = []
+            next_feats: List[np.ndarray] = []
+            for i, fut in enumerate(futures):
+                next_obs, reward, done, _ = fut.result()
+                obs_buf[i].append(feat_buf[i].copy())
                 act_buf[i].append(actions[i])
                 rew_buf[i].append(reward)
-                val_buf[i].append(values[i])
-                next_val_buf[i].append(next_value)
+                val_buf[i].append(float(values_np[i]))
                 logp_buf[i].append(logps[i])
-                mask_buf[i].append(masks[i])
+                mask_buf[i].append(mask_batch[i].copy())
                 done_buf[i].append(done)
+
                 if done:
-                    s = int(np.random.choice(starts))
-                    window_df = train_df.iloc[s : s + L].reset_index(drop=True)
-                    env = BacktestEnv(
-                        window_df,
-                        feature_cols=feature_cols,
-                        price_col="Open",
-                        cfg=cfg,
-                        ppo_true=True
-                    )
-                    obs = env.reset()
-                    hist = [obs["state"]]
-                    for _ in range(seq_len - 1):
-                        obs, _, done, _ = env.step(3)
-                        hist.append(obs["state"])
-                        if done:
-                            break
-                    envs[i] = env
-                    state_hists[i] = hist
+                    next_val_buf[i].append(0.0)
+                    _reset_env(i)
+                else:
+                    state_buf[i] = np.roll(state_buf[i], -1, axis=0)
+                    state_buf[i, -1] = next_obs["state"]
+                    t_next = envs[i].t
+                    window_next = envs[i].features[t_next - seq_len + 1 : t_next + 1]
+                    feat_next = np.zeros_like(feat_buf[i])
+                    feat_next[:, :feature_dim_total] = window_next
+                    feat_next[:, feature_dim_total:] = state_buf[i]
+                    next_indices.append(i)
+                    next_feats.append(feat_next)
+
+            if next_indices:
+                next_vals = _critic(tf.convert_to_tensor(next_feats)).numpy()
+                for idx, value in zip(next_indices, next_vals):
+                    next_val_buf[idx].append(float(value))
+    finally:
+        executor.shutdown(wait=True)
 
     # Объединяем накопленные буферы в единые массивы батча
     obs_arr: List[np.ndarray] = []
@@ -522,10 +526,10 @@ def evaluate_profit(
     """Запустить политику в среде и вернуть метрики."""
 
     obs = env.reset()
-    state_hist = [obs["state"]]
+    state_hist = [obs["state"].copy()]
     for _ in range(seq_len - 1):
         obs, _, done, _ = env.step(3)
-        state_hist.append(obs["state"])
+        state_hist.append(obs["state"].copy())
         if done:
             break
     # Прогоняем политику до завершения эпизода
@@ -539,7 +543,7 @@ def evaluate_profit(
         masked = apply_action_mask(logits, mask[None, :])
         action = int(tf.argmax(masked, axis=-1)[0])
         obs, _, done, _ = env.step(action)
-        state_hist.append(obs["state"])
+        state_hist.append(obs["state"].copy())
         if done:
             break
     metrics = env.metrics_report()
@@ -560,7 +564,7 @@ def train(
     backbone_weights: str,
     save_path: str,
     num_actions: int,
-    units_per_layer: List[int],
+    units: int,
     dropout: float,
     updates: int,
     n_env: int,
@@ -613,17 +617,13 @@ def train(
         seq_len,
         feature_dim,
         num_actions=num_actions,
-        units_per_layer=units_per_layer,
+        units=units,
         dropout=dropout,
         backbone_weights=backbone_weights,
         freeze_backbone=fine_tune,
     )
-    teacher_backbone = build_backbone(
-        seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
-    )
-    actor_backbone = build_backbone(
-        seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
-    )
+    teacher_backbone = build_backbone(seq_len, feature_dim, units=units, dropout=dropout)
+    actor_backbone = build_backbone(seq_len, feature_dim, units=units, dropout=dropout)
     if fine_tune:
         if critic_weights:
             print('Actor backbone training off')
@@ -721,7 +721,8 @@ def train(
                         feature_cols=feature_cols,
                         cfg=val_cfg,
                         price_col='Open',
-                        ppo_true=True
+                        ppo_true=True,
+                        record_history=True,
                     )
                     base_metrics = evaluate_profit(
                         base_env, teacher, seq_len, feature_dim, debug=debug
@@ -741,7 +742,8 @@ def train(
                     feature_cols=feature_cols,
                     cfg=val_cfg,
                     price_col='Open',
-                    ppo_true=True
+                    ppo_true=True,
+                    record_history=True,
                 )
 
                 val_metrics = evaluate_profit(val_env, actor, seq_len, feature_dim, debug=debug)
@@ -782,16 +784,14 @@ def testing_simulation(
     actor_weights,
     seq_len,
     feature_dim,
-    units_per_layer,
+    units,
     dropout,
     num_actions,
     feature_cols,
     test_cfg,
     debug=False
 ):
-    actor_backbone = build_backbone(
-        seq_len, feature_dim, units_per_layer=units_per_layer, dropout=dropout
-    )
+    actor_backbone = build_backbone(seq_len, feature_dim, units=units, dropout=dropout)
     actor = build_head(actor_backbone, num_actions)
     actor.load_weights(actor_weights)
 
@@ -800,7 +800,8 @@ def testing_simulation(
         feature_cols=feature_cols,
         price_col="Open",
         cfg=test_cfg,
-        ppo_true=True
+        ppo_true=True,
+        record_history=True,
     )
     evaluate_profit(test_env, actor, seq_len, feature_dim, debug=debug)
     fig = test_env.plot("PPO testing")

@@ -24,5 +24,5 @@ def test_optuna_tune_runs():
     params = optimize_hyperparameters(
         train_ds, val_ds, seq_len=5, feature_dim=3, acc_dim=2, n_trials=1, epochs=1
     )
-    assert set(params) == {"units_per_layer", "dropout", "lr"}
-    assert len(params["units_per_layer"]) == 3
+    assert set(params) == {"units", "dropout", "lr"}
+    assert isinstance(params["units"], int)

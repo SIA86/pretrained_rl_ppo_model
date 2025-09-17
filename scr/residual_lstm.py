@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Optional
 
 import tensorflow as tf
 from tensorflow import keras
@@ -21,40 +21,18 @@ VERY_NEG = -1e9
 def build_backbone(
     seq_len: int,
     feature_dim: int,
-    units_per_layer: Sequence[int] = (128, 128, 64),
+    *,
+    units: int = 128,
     dropout: float = 0.2,
     ln_eps: float = 1e-5,
 ) -> keras.Model:
-    """Построить бэкбон остаточной стековой LSTM."""
+    """Построить компактный однослойный LSTM-бэкбон."""
 
-    def _branch(inp, dim, prefix: str):
-        x = inp
-        in_dim = dim
-        for i, units in enumerate(units_per_layer):
-            h = layers.LSTM(units, return_sequences=True, name=f"{prefix}_lstm_{i}")(x)
-            h = layers.LayerNormalization(epsilon=ln_eps, name=f"{prefix}_ln_{i}")(h)
-            h = layers.Dropout(dropout, name=f"{prefix}_do_{i}")(h)
-            if in_dim == units:
-                x = layers.Add(name=f"{prefix}_res_add_{i}")([x, h])
-            else:
-                proj = layers.TimeDistributed(
-                    layers.Dense(units), name=f"{prefix}_res_proj_{i}"
-                )(x)
-                x = layers.Add(name=f"{prefix}_res_add_{i}")([proj, h])
-            in_dim = units
-        last = layers.Lambda(lambda t: t[:, -1, :], name=f"{prefix}_last")(x)
-        last = layers.LayerNormalization(
-            epsilon=ln_eps,
-            center=False,
-            scale=False,
-            name=f"{prefix}_ln_head",
-        )(last)
-        last = layers.Dropout(dropout, name=f"{prefix}_do_head")(last)
-        return last
-
-    x_in = keras.Input(shape=(seq_len, feature_dim), name="features")
-    feat_last = _branch(x_in, feature_dim, "feat")
-    return keras.Model(inputs=x_in, outputs=feat_last, name="ResidualLSTMBackbone")
+    inputs = keras.Input(shape=(seq_len, feature_dim), name="features")
+    x = layers.LSTM(units, return_sequences=False, name="feat_lstm")(inputs)
+    x = layers.LayerNormalization(epsilon=ln_eps, name="feat_ln")(x)
+    x = layers.Dropout(dropout, name="feat_dropout")(x)
+    return keras.Model(inputs=inputs, outputs=x, name="ResidualLSTMBackbone")
 
 
 def build_head(
@@ -70,25 +48,6 @@ def build_head(
         x = layers.Dense(units, activation="relu", name="head_dense")(x)
     logits = layers.Dense(num_classes, name="logits")(x)
     return keras.Model(inputs=backbone.input, outputs=logits, name="ResidualLSTM")
-
-
-def build_stacked_residual_lstm(
-    seq_len: int,
-    feature_dim: int,
-    num_classes: int = NUM_CLASSES,
-    units_per_layer: Sequence[int] = (128, 128, 64),
-    dropout: float = 0.2,
-    ln_eps: float = 1e-5,
-) -> keras.Model:
-    """Совместимая обёртка для старого API."""
-    backbone = build_backbone(
-        seq_len,
-        feature_dim,
-        units_per_layer=units_per_layer,
-        dropout=dropout,
-        ln_eps=ln_eps,
-    )
-    return build_head(backbone, num_classes, units=None)
 
 
 def apply_action_mask(
