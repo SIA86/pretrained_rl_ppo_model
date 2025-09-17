@@ -35,11 +35,11 @@ class EnvConfig(NamedTuple):
     # Использовать ли логарифмическую доходность
     use_log_reward: bool
     # задержка после которой начинат начисляться штраф
-    valid_time: int
+    valid_time: int = 0
     # Штраф за каждый шаг удержания позиции
-    time_penalty: float
+    time_penalty: float = 0.0
     # Штраф за бездействие без открытой позиции
-    hold_penalty: float
+    hold_penalty: float = 0.0
 
 
 DEFAULT_CONFIG = EnvConfig(
