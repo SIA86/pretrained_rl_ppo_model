@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -68,6 +68,56 @@ class Trajectory:
 class EvalCacheEntry:
     env: BacktestEnv
     metrics: Dict[str, float]
+
+
+IntervalLike = pd.Index | np.ndarray | Iterable[pd.Timestamp]
+
+
+def _normalize_interval(
+    index: pd.DatetimeIndex, interval: IntervalLike
+) -> pd.DatetimeIndex:
+    """Привести интервал к DatetimeIndex исходного индекса данных."""
+    seg = pd.DatetimeIndex(interval)
+    if index.tz is not None:
+        if seg.tz is None:
+            seg = seg.tz_localize(index.tz)
+        elif str(seg.tz) != str(index.tz):
+            seg = seg.tz_convert(index.tz)
+    elif seg.tz is not None:
+        seg = seg.tz_convert("UTC").tz_localize(None)
+    return seg.intersection(index)
+
+
+def _collect_valid_starts(
+    index: pd.DatetimeIndex,
+    intervals: Sequence[IntervalLike],
+    required: int,
+) -> np.ndarray:
+    """Собрать допустимые стартовые позиции для окон заданной длины."""
+    if required <= 0:
+        raise ValueError("required must be positive")
+    if not isinstance(index, pd.DatetimeIndex):
+        raise TypeError("index must be DatetimeIndex when using intervals")
+
+    starts: List[np.ndarray] = []
+    for interval in intervals:
+        seg = _normalize_interval(index, interval)
+        if len(seg) == 0:
+            continue
+        seg = seg.unique().sort_values()
+        positions = index.get_indexer(seg)
+        if len(positions) == 0 or np.any(positions < 0):
+            continue
+        positions.sort()
+        splits = np.where(np.diff(positions) != 1)[0] + 1
+        for run in np.split(positions, splits):
+            if len(run) < required:
+                continue
+            limit = len(run) - required + 1
+            starts.append(run[:limit])
+    if not starts:
+        return np.empty(0, dtype=int)
+    return np.unique(np.concatenate(starts))
 
 
 def _format_metric_value(value: float | int | None) -> str:
@@ -129,7 +179,7 @@ def collect_trajectories(
     rollout: int,
     seq_len: int,
     num_actions: int,
-    index_ranges: Optional[List[Tuple[str, int]]] = None,
+    index_ranges: Optional[Sequence[IntervalLike]] = None,
     gamma: float = 0.99,
     lam: float = 0.95,
     debug: bool = False,
@@ -143,18 +193,9 @@ def collect_trajectories(
             f"\ncollect_trajectories: n_env={n_env} rollout={rollout} seq_len={seq_len}"
         )
     if index_ranges:
-        start_lists: List[np.ndarray] = []
-        for start_label, length in index_ranges:
-            pos = train_df.index.get_indexer([start_label])[0]
-            if pos == -1 or length < needed:
-                continue
-            end = pos + length
-            if end > len(train_df):
-                continue
-            start_lists.append(np.arange(pos, end - needed + 1))
-        if not start_lists:
+        starts = _collect_valid_starts(train_df.index, index_ranges, needed)
+        if starts.size == 0:
             raise ValueError("No valid start indices in index_ranges")
-        starts = np.unique(np.concatenate(start_lists))
     else:
         max_start = len(train_df) - needed
         if max_start < 0:
@@ -589,7 +630,7 @@ def train(
     n_validations: int = 1,
     gamma: float = 0.99,
     lam: float = 0.95,
-    index_ranges: Optional[List[Tuple[str, int]]] = None,
+    index_ranges: Optional[Sequence[IntervalLike]] = None,
     fine_tune: bool = False,
     debug: bool = False,
 ) -> Tuple[keras.Model, keras.Model, List[Dict[str, float]], List[Dict[str, float]]]:
@@ -598,21 +639,13 @@ def train(
         print(f"CPU available: {os.cpu_count()}")
 
     # создаем среду для валидации и инфереса feature_dim
-    val_start_lists: List[np.ndarray] = []
-    needed = val_cfg.max_steps
+    val_required = val_cfg.max_steps + 1
     if index_ranges:
-        for start_label, length in index_ranges:
-            pos = val_df.index.get_indexer([start_label])[0]
-            if pos == -1:
-                continue
-            end = pos + length
-            if end > len(val_df):
-                continue
-            val_start_lists.append((start_label, length))
-        if not val_start_lists:
+        val_starts = _collect_valid_starts(val_df.index, index_ranges, val_required)
+        if val_starts.size == 0:
             raise ValueError("No valid start indices in index_ranges")
     else:
-        max_start = len(val_df) - needed
+        max_start = len(val_df) - val_required
         if max_start < 0:
             raise ValueError("DataFrame too short for given parameters")
         val_starts = np.arange(max_start + 1)
@@ -657,13 +690,8 @@ def train(
 
     val_windows = []
     for num in range(n_validations):
-        if val_start_lists:
-            s = int(np.random.choice(range(len(val_start_lists))))
-            start, length = val_start_lists[s]
-            val_windows.append(val_df.loc[start:].iloc[:length])
-        else:
-            s = int(np.random.choice(val_starts))
-            val_windows.append(val_df.iloc[s : s + needed + 1])
+        s = int(np.random.choice(val_starts))
+        val_windows.append(val_df.iloc[s : s + val_required])
 
     baseline_name = "Teacher"
     baseline_cache: List[EvalCacheEntry] | None = None
