@@ -44,6 +44,7 @@ def build_critic(
     critic_backbone = build_backbone(seq_len, feature_dim, units=units, dropout=dropout)
     # При необходимости загружаем предобученные веса бэкбона
     if backbone_weights:
+        print('Loading critic backbone weights')
         critic_backbone.load_weights(backbone_weights)
     if freeze_backbone:
         print('Critic backbone training off')
@@ -622,17 +623,21 @@ def train(
         backbone_weights=backbone_weights,
         freeze_backbone=fine_tune,
     )
+    if critic_weights:
+        print('Loading full critic model weights')
+        critic.load_weights(critic_weights)
+
     teacher_backbone = build_backbone(seq_len, feature_dim, units=units, dropout=dropout)
     actor_backbone = build_backbone(seq_len, feature_dim, units=units, dropout=dropout)
     if fine_tune:
-        if critic_weights:
-            print('Actor backbone training off')
-            critic.load_weights(critic_weights)
+        print('Actor backbone training off')
         actor_backbone.trainable = False
     teacher = build_head(teacher_backbone, num_actions)
     actor = build_head(actor_backbone, num_actions)
-    teacher.load_weights(teacher_weights)
-    actor.load_weights(teacher_weights)
+    if teacher_weights:
+        print('Loading full actor model weights')
+        teacher.load_weights(teacher_weights)
+        actor.load_weights(teacher_weights)
     teacher.trainable = False
 
     actor_opt = keras.optimizers.Adam(actor_lr)
@@ -700,7 +705,7 @@ def train(
         metrics["avg_return"] = avg_ret
         train_log.append(metrics)
         if debug:
-            print(f"\nUpdate={step} Training average metrics:")
+            print(f"\nUpdate={step} \nTraining average metrics:")
             for k,v in metrics.items():
                 print(f"{k}: {v:.5f}")
 
@@ -748,7 +753,7 @@ def train(
 
                 val_metrics = evaluate_profit(val_env, actor, seq_len, feature_dim, debug=debug)
                 val_env.plot("PPO validation")
-                print("\nMetrics:")
+                print("\nMetrics (Old / New):")
                 metric_keys = sorted(set(baseline_entry.metrics) | set(val_metrics))
                 for key in metric_keys:
                     base_val = baseline_entry.metrics.get(key)
