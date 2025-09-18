@@ -103,8 +103,15 @@ def _step_single(
     if cfg.max_steps is not None and next_t >= cfg.max_steps:
         done = True
 
-    # Текущая и следующая цены
+    # Текущая цена
     this_price = prices[t]
+
+    # Безопасно получаем следующую цену: если данных не хватает, используем
+    # последнюю доступную и сигнализируем о завершении эпизода
+    last_valid_idx = prices.shape[0] - 1
+    if next_t >= prices.shape[0]:
+        next_t = last_valid_idx
+        done = True
     next_price = prices[next_t]
 
     prev_position = position  # позиция до совершения действия
