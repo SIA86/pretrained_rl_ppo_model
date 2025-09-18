@@ -526,6 +526,10 @@ def evaluate_profit(
 ) -> Dict[str, float]:
     """Запустить политику в среде и вернуть метрики."""
 
+    @tf.function
+    def _actor_logits(batch_features: tf.Tensor) -> tf.Tensor:
+        return actor(batch_features, training=False)
+
     obs = env.reset()
     state_hist = [obs["state"].copy()]
     for _ in range(seq_len - 1):
@@ -540,7 +544,7 @@ def evaluate_profit(
         state_window = np.stack(state_hist[t - seq_len + 1 : t + 1])
         feat = np.concatenate([window, state_window], axis=1)
         mask = env.action_mask()
-        logits = actor(feat[None, ...], training=False)
+        logits = _actor_logits(feat[None, ...])
         masked = apply_action_mask(logits, mask[None, :])
         action = int(tf.argmax(masked, axis=-1)[0])
         obs, _, done, _ = env.step(action)
