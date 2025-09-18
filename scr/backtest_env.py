@@ -162,8 +162,6 @@ def _step_single(
     if position == 0 and cfg.hold_penalty > 0.0:
         eff_flat = flat_steps + 1
         penalty -= np.sqrt(max(eff_flat - cfg.valid_time, 0)) * cfg.hold_penalty
-    if penalty != 0.0:
-        realized_pnl += penalty
 
     # Нереализованный PnL после совершения действия
     unrealized = 0.0
@@ -181,10 +179,11 @@ def _step_single(
 
     if cfg.use_log_reward:
         # Жёстко клипуем шаговую доходность снизу чуть выше -1
-        clipped = pnl_step if pnl_step > -0.999999 else -0.999999
+        total = pnl_step + penalty
+        clipped = total if total > -0.999999 else -0.999999
         core = np.log1p(clipped)
     else:
-        core = pnl_step
+        core = pnl_step + penalty
     reward = cfg.reward_scale * core
 
     # print(f"POS {position} PNL {pnl_step} P {penalty} R {reward}")
