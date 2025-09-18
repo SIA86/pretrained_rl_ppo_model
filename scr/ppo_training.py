@@ -785,7 +785,7 @@ def train(
 
                 val_metrics = evaluate_profit(val_env, actor, seq_len, feature_dim, debug=debug)
                 val_env.plot("PPO validation")
-                print("\nMetrics (Old / New):")
+                print("\nMetrics (Champion / New):")
                 metric_keys = sorted(set(baseline_entry.metrics) | set(val_metrics))
                 for key in metric_keys:
                     base_val = baseline_entry.metrics.get(key)
