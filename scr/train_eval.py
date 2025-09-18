@@ -391,9 +391,12 @@ def fit_model(
 ):
     """Обучить ``model`` и вернуть историю в виде словаря.
 
-    При указании ``backbone_path`` из ``model`` автоматически
-    извлекается бэкбон до слоя ``feat_last`` и его веса
-    сохраняются и восстанавливаются по указанному пути.
+    При ``save_backbone=True`` из ``model`` автоматически выделяется
+    бэкбон: берётся первый доступный слой из
+    ``("feat_last", "feat_dropout", "feat_ln", "feat_lstm", "features")``;
+    если ни один не найден, используется вход головы ``head_dense`` либо
+    ``logits``. При полном отсутствии подходящего слоя выбрасывается
+    понятная ошибка.
     """
 
     try:
@@ -414,16 +417,37 @@ def fit_model(
         optimizer = keras.optimizers.Adam(learning_rate=lr, clipnorm=grad_clip_norm)
 
     if save_backbone:
-        try:
-            backbone = keras.Model(
-                model.input,
-                model.get_layer("feat_last").output,
-                name="ResidualLSTMBackbone",
-            )
-        except Exception as e:  # pragma: no cover - best effort
+        backbone_tensor = None
+        candidates = ("feat_last", "feat_dropout", "feat_ln", "feat_lstm", "features")
+        fallback_inputs = ("head_dense", "logits")
+
+        for layer_name in candidates:
+            try:
+                layer = model.get_layer(layer_name)
+            except (ValueError, KeyError):
+                continue
+            else:
+                backbone_tensor = layer.output
+                break
+
+        if backbone_tensor is None:
+            for layer_name in fallback_inputs:
+                try:
+                    layer = model.get_layer(layer_name)
+                except (ValueError, KeyError):
+                    continue
+                else:
+                    backbone_tensor = layer.input
+                    break
+
+        if backbone_tensor is None:
             raise ValueError(
-                "backbone_path provided but model lacks layer 'feat_last' to infer backbone"
-            ) from e
+                "save_backbone=True but model lacks supported layers to infer backbone: "
+                "expected one of ('feat_last', 'feat_dropout', 'feat_ln', 'feat_lstm', 'features') "
+                "or inputs of 'head_dense'/'logits'."
+            )
+
+        backbone = keras.Model(model.input, backbone_tensor, name="ResidualLSTMBackbone")
     else:
         backbone = None
 
