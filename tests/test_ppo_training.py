@@ -14,7 +14,8 @@ from scr.residual_lstm import build_backbone, build_head, VERY_NEG
 
 
 def make_df():
-    return pd.DataFrame({"Open": np.ones(20), "feat": np.zeros(20)})
+    idx = pd.date_range("2020-01-01", periods=20, freq="h")
+    return pd.DataFrame({"Open": np.ones(20), "feat": np.zeros(20)}, index=idx)
 
 
 def make_cfg():
@@ -162,7 +163,8 @@ def test_collect_trajectories_nan_probs():
 
 
 def test_collect_trajectories_index_ranges():
-    df = pd.DataFrame({"Open": np.ones(20), "feat": np.arange(20)})
+    idx = pd.date_range("2020-01-01", periods=20, freq="h")
+    df = pd.DataFrame({"Open": np.ones(20), "feat": np.arange(20)}, index=idx)
     feat_cols = ["feat"]
     cfg = make_cfg()
     seq_len = 1
@@ -170,13 +172,14 @@ def test_collect_trajectories_index_ranges():
     actor, critic = build_models(seq_len, feature_dim)
     rollout = 2
     needed = max(cfg.max_steps + seq_len, rollout)
+    interval = pd.DatetimeIndex(df.index[5 : 5 + needed])
     traj = collect_trajectories(
         df,
         actor,
         critic,
         cfg,
         feat_cols,
-        index_ranges=[(5, needed)],
+        index_ranges=[interval],
         n_env=1,
         rollout=rollout,
         seq_len=seq_len,
@@ -193,6 +196,7 @@ def test_collect_trajectories_invalid_range():
     seq_len = 1
     feature_dim = len(feat_cols) + 5
     actor, critic = build_models(seq_len, feature_dim)
+    interval = pd.DatetimeIndex([df.index[0]])
     with pytest.raises(ValueError):
         collect_trajectories(
             df,
@@ -200,7 +204,7 @@ def test_collect_trajectories_invalid_range():
             critic,
             cfg,
             feat_cols,
-            index_ranges=[(0, 1)],
+            index_ranges=[interval],
             n_env=1,
             rollout=2,
             seq_len=seq_len,
