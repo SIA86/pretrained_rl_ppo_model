@@ -120,6 +120,32 @@ def _collect_valid_starts(
     return np.unique(np.concatenate(starts))
 
 
+def _prepare_validation_windows(
+    val_df: pd.DataFrame,
+    intervals: Sequence[IntervalLike],
+    required: int,
+) -> List[pd.DataFrame]:
+    """Сформировать кандидаты для валидационных окон из произвольных интервалов."""
+    if required <= 0:
+        raise ValueError("required must be positive")
+    if not isinstance(val_df.index, pd.DatetimeIndex):
+        raise TypeError("val_df must have DatetimeIndex when using index_ranges")
+
+    windows: List[pd.DataFrame] = []
+    for interval in intervals:
+        seg = _normalize_interval(val_df.index, interval)
+        if len(seg) == 0:
+            continue
+        seg = seg.unique().sort_values()
+        window = val_df.loc[seg]
+        if len(window) == 0:
+            continue
+        if len(window) > required:
+            window = window.iloc[:required]
+        windows.append(window)
+    return windows
+
+
 def _format_metric_value(value: float | int | None) -> str:
     if value is None:
         return "n/a"
@@ -640,10 +666,11 @@ def train(
 
     # создаем среду для валидации и инфереса feature_dim
     val_required = val_cfg.max_steps + 1
+    val_candidates: List[pd.DataFrame] | None = None
     if index_ranges:
-        val_starts = _collect_valid_starts(val_df.index, index_ranges, val_required)
-        if val_starts.size == 0:
-            raise ValueError("No valid start indices in index_ranges")
+        val_candidates = _prepare_validation_windows(val_df, index_ranges, val_required)
+        if not val_candidates:
+            raise ValueError("No valid validation intervals in index_ranges")
     else:
         max_start = len(val_df) - val_required
         if max_start < 0:
@@ -688,11 +715,16 @@ def train(
     train_log: List[Dict[str, float]] = []
     val_log: List[Dict[str, float]] = []
 
-    val_windows = []
-    for num in range(n_validations):
-        s = int(np.random.choice(val_starts))
-        val = val_df.iloc[s : s + val_required]
-        val_windows.append(val)
+    val_windows: List[pd.DataFrame] = []
+    if val_candidates is not None:
+        for _ in range(n_validations):
+            idx = int(np.random.choice(len(val_candidates)))
+            val_windows.append(val_candidates[idx].copy())
+    else:
+        for _ in range(n_validations):
+            s = int(np.random.choice(val_starts))
+            val = val_df.iloc[s : s + val_required]
+            val_windows.append(val)
 
     baseline_name = "Teacher"
     baseline_cache: List[EvalCacheEntry] | None = None

@@ -9,7 +9,12 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from scr.backtest_env import EnvConfig
-from scr.ppo_training import collect_trajectories, ppo_update, train
+from scr.ppo_training import (
+    _prepare_validation_windows,
+    collect_trajectories,
+    ppo_update,
+    train,
+)
 from scr.residual_lstm import build_backbone, build_head, VERY_NEG
 
 
@@ -210,6 +215,24 @@ def test_collect_trajectories_invalid_range():
             seq_len=seq_len,
             num_actions=4,
         )
+
+
+def test_prepare_validation_windows_short_interval():
+    df = make_df()
+    cfg = make_cfg()
+    short_interval = pd.DatetimeIndex(df.index[:2])
+    windows = _prepare_validation_windows(df, [short_interval], cfg.max_steps + 1)
+    assert len(windows) == 1
+    assert len(windows[0]) == len(short_interval)
+
+
+def test_prepare_validation_windows_truncate_long_interval():
+    df = make_df()
+    cfg = make_cfg()
+    long_interval = pd.DatetimeIndex(df.index[:5])
+    windows = _prepare_validation_windows(df, [long_interval], cfg.max_steps + 1)
+    assert len(windows) == 1
+    assert len(windows[0]) == cfg.max_steps + 1
 
 
 def test_train_freeze_backbones(tmp_path):
