@@ -863,7 +863,8 @@ def train(
                 if teacher is not None:
                     teacher.set_weights(actor.get_weights())
                     teacher.trainable = False
-                kl_coef = teacher_kl
+                    kl_coef = teacher_kl
+                    entropy_coef = c2
                 pending_baseline = ("Champion", current_eval_cache)
 
 
