@@ -93,6 +93,7 @@ def main() -> None:
         batch_size=1,
         teacher_kl=0.1,
         kl_decay=0.5,
+        entropy_decay=1.0,
         max_grad_norm=0.5,
         target_kl=0.01,
         val_interval=1,

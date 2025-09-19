@@ -497,12 +497,13 @@ def ppo_update(
     teacher: Optional[keras.Model] = None,
     kl_coef: float,
     kl_decay: float,
+    entropy_decay: float,
     max_grad_norm: Optional[float] = None,
     target_kl: Optional[float] = None,
     debug: bool = False,
-) -> Tuple[float, Dict[str, float]]:
+) -> Tuple[float, float, Dict[str, float]]:
     """Выполнить несколько эпох обновления PPO.
-    Возвращает обновлённый коэффициент KL и словарь метрик."""
+    Возвращает обновлённые коэффициенты KL и энтропии вместе со словарём метрик."""
 
     obs = tf.convert_to_tensor(traj.obs)
     acts = tf.convert_to_tensor(traj.actions)
@@ -581,7 +582,7 @@ def ppo_update(
         "approx_kl": float(np.mean(approx_kls)),
         "clip_fraction": float(np.mean(clipfracs)),
     }
-    return kl_coef * kl_decay, metrics
+    return kl_coef * kl_decay, c2 * entropy_decay, metrics
 
 
 def evaluate_profit(
@@ -650,6 +651,7 @@ def train(
     batch_size: int,
     teacher_kl: float,
     kl_decay: float,
+    entropy_decay: float,
     max_grad_norm: float,
     target_kl: float,
     val_interval: int,
@@ -710,6 +712,7 @@ def train(
 
     # Инициализируем коэффициент KL и параметры ранней остановки
     kl_coef = teacher_kl
+    entropy_coef = c2
     best_profit: Optional[float] = None
 
     train_log: List[Dict[str, float]] = []
@@ -747,7 +750,8 @@ def train(
             lam=lam,
             debug=debug,
         )
-        kl_coef, metrics = ppo_update(
+        current_c2 = entropy_coef
+        kl_coef, entropy_coef, metrics = ppo_update(
             actor,
             critic,
             traj,
@@ -756,18 +760,20 @@ def train(
             num_actions=num_actions,
             clip_ratio=clip_ratio,
             c1=c1,
-            c2=c2,
+            c2=current_c2,
             epochs=epochs,
             batch_size=batch_size,
             teacher=teacher,
             kl_coef=kl_coef,
             kl_decay=kl_decay,
+            entropy_decay=entropy_decay,
             max_grad_norm=max_grad_norm,
             target_kl=target_kl,
             debug=debug,
         )
         avg_ret = float(np.mean(traj.returns))
         metrics["avg_return"] = avg_ret
+        metrics["entropy_coef"] = current_c2
         train_log.append(metrics)
         if debug:
             print(f"\nUpdate={step} \nTraining average metrics:")
