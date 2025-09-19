@@ -691,7 +691,8 @@ def train(
     val_windows = []
     for num in range(n_validations):
         s = int(np.random.choice(val_starts))
-        val_windows.append(val_df.iloc[s : s + val_required])
+        val = val_df.iloc[s : s + val_required]
+        val_windows.append(val)
 
     baseline_name = "Teacher"
     baseline_cache: List[EvalCacheEntry] | None = None
@@ -738,6 +739,7 @@ def train(
         train_log.append(metrics)
         if debug:
             print(f"\nUpdate={step} \nTraining average metrics:")
+            print(f"KL_teacher: {kl_coef:.4f}")
             for k,v in metrics.items():
                 print(f"{k}: {v:.5f}")
 

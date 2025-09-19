@@ -381,7 +381,7 @@ def enrich_q_labels_trend_one_side(
     out["Mask_Hold"] = M_Hold
     out["Mask_Wait"] = M_Wait
 
-    return out.reset_index(drop=True)
+    return out
 
 
 def soft_signal_labels_gaussian(
