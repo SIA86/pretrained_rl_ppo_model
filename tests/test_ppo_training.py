@@ -9,6 +9,7 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from scr.backtest_env import EnvConfig
+import scr.ppo_training as ppo_training
 from scr.ppo_training import (
     _prepare_validation_windows,
     collect_trajectories,
@@ -236,6 +237,111 @@ def test_prepare_validation_windows_truncate_long_interval():
     assert len(windows) == 1
     assert len(windows[0]) == cfg.max_steps + 1
 
+
+def test_train_validation_windows_unique_index_ranges(monkeypatch, tmp_path):
+    df = make_df()
+    feat_cols = ["feat"]
+    cfg = make_cfg()
+    seq_len = 1
+    feature_dim = len(feat_cols) + 5
+    index_ranges = [
+        pd.DatetimeIndex(df.index[start : start + cfg.max_steps + 1])
+        for start in (0, 3, 6)
+    ]
+
+    original_choice = ppo_training.np.random.choice
+    calls = []
+
+    def tracking_choice(a, size=None, replace=True, p=None):
+        result = original_choice(a, size=size, replace=replace, p=p)
+        calls.append((a, size, replace, np.array(result, copy=True)))
+        return result
+
+    monkeypatch.setattr(ppo_training.np.random, "choice", tracking_choice)
+
+    train(
+        df,
+        df,
+        cfg,
+        cfg,
+        feature_dim,
+        feat_cols,
+        seq_len,
+        teacher_weights="",
+        critic_weights="",
+        backbone_weights="",
+        save_path=str(tmp_path),
+        num_actions=4,
+        units=16,
+        dropout=0.0,
+        updates=0,
+        n_env=1,
+        rollout=1,
+        actor_lr=1e-3,
+        critic_lr=1e-3,
+        clip_ratio=0.2,
+        c1=0.5,
+        c2=0.01,
+        epochs=1,
+        batch_size=1,
+        teacher_kl=0.1,
+        kl_decay=0.5,
+        entropy_decay=1.0,
+        max_grad_norm=1.0,
+        target_kl=1.0,
+        val_interval=1,
+        n_validations=len(index_ranges),
+        index_ranges=index_ranges,
+    )
+
+    assert len(calls) == 1
+    _, size, replace, result = calls[0]
+    assert size == len(index_ranges)
+    assert replace is False
+    assert np.unique(result).size == len(index_ranges)
+
+
+def test_train_validation_windows_not_enough_candidates(tmp_path):
+    df = make_df().iloc[:2]
+    feat_cols = ["feat"]
+    cfg = make_cfg()
+    seq_len = 1
+    feature_dim = len(feat_cols) + 5
+
+    with pytest.raises(ValueError, match="Requested more validation windows"):
+        train(
+            df,
+            df,
+            cfg,
+            cfg,
+            feature_dim,
+            feat_cols,
+            seq_len,
+            teacher_weights="",
+            critic_weights="",
+            backbone_weights="",
+            save_path=str(tmp_path),
+            num_actions=4,
+            units=16,
+            dropout=0.0,
+            updates=0,
+            n_env=1,
+            rollout=1,
+            actor_lr=1e-3,
+            critic_lr=1e-3,
+            clip_ratio=0.2,
+            c1=0.5,
+            c2=0.01,
+            epochs=1,
+            batch_size=1,
+            teacher_kl=0.1,
+            kl_decay=0.5,
+            entropy_decay=1.0,
+            max_grad_norm=1.0,
+            target_kl=1.0,
+            val_interval=1,
+            n_validations=2,
+        )
 
 def test_train_freeze_backbones(tmp_path):
     df = make_df()
