@@ -848,6 +848,10 @@ def train(
                 best_profit = avg_profit
                 actor.save_weights(best_actor_path)
                 critic.save_weights(best_critic_path)
+                if teacher is not None:
+                    teacher.set_weights(actor.get_weights())
+                    teacher.trainable = False
+                kl_coef = teacher_kl
                 pending_baseline = ("Champion", current_eval_cache)
 
 
