@@ -720,13 +720,25 @@ def train(
 
     val_windows: List[pd.DataFrame] = []
     if val_candidates is not None:
-        for _ in range(n_validations):
-            idx = int(np.random.choice(len(val_candidates)))
-            val_windows.append(val_candidates[idx].copy())
+        available = len(val_candidates)
+        if available < n_validations:
+            raise ValueError(
+                "Requested more validation windows than available in index_ranges: "
+                f"{n_validations} > {available}"
+            )
+        selected = np.random.choice(available, size=n_validations, replace=False)
+        for idx in selected:
+            val_windows.append(val_candidates[int(idx)].copy())
     else:
-        for _ in range(n_validations):
-            s = int(np.random.choice(val_starts))
-            val = val_df.iloc[s : s + val_required]
+        available = len(val_starts)
+        if available < n_validations:
+            raise ValueError(
+                "Requested more validation windows than available in val_df: "
+                f"{n_validations} > {available}"
+            )
+        selected = np.random.choice(val_starts, size=n_validations, replace=False)
+        for s in selected:
+            val = val_df.iloc[int(s) : int(s) + val_required].copy()
             val_windows.append(val)
 
     baseline_name = "Teacher"
