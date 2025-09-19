@@ -112,7 +112,7 @@ def test_ppo_update_kl_decay():
     )
     opt_a = keras.optimizers.Adam(1e-3)
     opt_c = keras.optimizers.Adam(1e-3)
-    new_coef, metrics = ppo_update(
+    new_kl, new_c2, metrics = ppo_update(
         actor,
         critic,
         traj,
@@ -127,8 +127,10 @@ def test_ppo_update_kl_decay():
         teacher=teacher,
         kl_coef=0.1,
         kl_decay=0.5,
+        entropy_decay=0.1,
     )
-    assert np.isclose(new_coef, 0.05)
+    assert np.isclose(new_kl, 0.05)
+    assert np.isclose(new_c2, 0.001)
     assert "teacher_kl" in metrics
 
 
@@ -272,6 +274,7 @@ def test_train_freeze_backbones(tmp_path):
         batch_size=1,
         teacher_kl=0.1,
         kl_decay=0.5,
+        entropy_decay=1.0,
         max_grad_norm=1.0,
         target_kl=1.0,
         val_interval=1,
