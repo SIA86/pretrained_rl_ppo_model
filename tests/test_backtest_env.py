@@ -1,6 +1,7 @@
 import os
 import sys
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
@@ -87,6 +88,21 @@ def test_use_log_reward():
     assert last_log["equity"] == pytest.approx(0.5)
     assert last_lin["reward"] == pytest.approx(0.5)
     assert last_log["reward"] == pytest.approx(np.log1p(0.5))
+
+
+def test_plot_show_false(monkeypatch):
+    env = make_env([1, 2, 3, 4])
+    run_actions(env, [0, 2, 1])
+    called = []
+
+    def fake_show():
+        called.append(True)
+
+    monkeypatch.setattr(plt, "show", fake_show)
+    fig = env.plot("Test", show=False)
+    assert called == []
+    assert fig is not None
+    plt.close(fig)
 
 
 # Конструктор тестовых данных
