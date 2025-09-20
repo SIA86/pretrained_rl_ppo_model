@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow import keras
+from matplotlib.backends.backend_pdf import PdfPages
 
 from .backtest_env import BacktestEnv, EnvConfig
 from .dataset_builder import extract_features
@@ -66,8 +68,8 @@ class Trajectory:
 
 @dataclass
 class EvalCacheEntry:
-    env: BacktestEnv
-    metrics: Dict[str, float]
+    env: Optional[BacktestEnv] = None
+    metrics: Dict[str, float] = field(default_factory=dict)
 
 
 IntervalLike = pd.Index | np.ndarray | Iterable[pd.Timestamp]
@@ -624,6 +626,32 @@ def evaluate_profit(
     return metrics
 
 
+def _evaluate_window(
+    window_df: pd.DataFrame,
+    *,
+    model: keras.Model,
+    feature_cols: List[str],
+    cfg: EnvConfig,
+    seq_len: int,
+    feature_dim: int,
+    price_col: str,
+    keep_env: bool,
+    debug: bool = False,
+) -> EvalCacheEntry:
+    """Оценить модель на одном окне валидации."""
+
+    env = BacktestEnv(
+        window_df,
+        feature_cols=feature_cols,
+        cfg=cfg,
+        price_col=price_col,
+        ppo_true=True,
+        record_history=True,
+    )
+    metrics = evaluate_profit(env, model, seq_len, feature_dim, debug=debug)
+    return EvalCacheEntry(env=env if keep_env else None, metrics=metrics)
+
+
 def train(
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
@@ -659,6 +687,7 @@ def train(
     gamma: float = 0.99,
     lam: float = 0.95,
     index_ranges: Optional[Sequence[IntervalLike]] = None,
+    log_to_pdf_path: str = "",
     fine_tune: bool = False,
     debug: bool = False,
 ) -> Tuple[keras.Model, keras.Model, List[Dict[str, float]], List[Dict[str, float]]]:
@@ -718,32 +747,33 @@ def train(
     train_log: List[Dict[str, float]] = []
     val_log: List[Dict[str, float]] = []
 
-    val_windows: List[pd.DataFrame] = []
     if val_candidates is not None:
-        available = len(val_candidates)
-        if available < n_validations:
-            raise ValueError(
-                "Requested more validation windows than available in index_ranges: "
-                f"{n_validations} > {available}"
-            )
-        selected = np.random.choice(available, size=n_validations, replace=False)
-        for idx in selected:
-            val_windows.append(val_candidates[int(idx)].copy())
+        val_windows_all = [window.copy() for window in val_candidates]
     else:
-        available = len(val_starts)
-        if available < n_validations:
-            raise ValueError(
-                "Requested more validation windows than available in val_df: "
-                f"{n_validations} > {available}"
-            )
-        selected = np.random.choice(val_starts, size=n_validations, replace=False)
-        for s in selected:
-            val = val_df.iloc[int(s) : int(s) + val_required].copy()
-            val_windows.append(val)
+        val_windows_all = [
+            val_df.iloc[int(start) : int(start) + val_required].copy()
+            for start in val_starts
+        ]
+
+    if not val_windows_all:
+        raise ValueError("No validation windows available")
+
+    total_windows = len(val_windows_all)
+    display_count = min(n_validations, total_windows)
+    if display_count > 0:
+        display_indices = np.random.choice(
+            total_windows, size=display_count, replace=False
+        )
+        display_indices = np.sort(display_indices.astype(int))
+    else:
+        display_indices = np.empty(0, dtype=int)
+    display_set = {int(idx) for idx in display_indices.tolist()}
 
     baseline_name = "Teacher"
-    baseline_cache: List[EvalCacheEntry] | None = None
-    pending_baseline: Optional[Tuple[str, List[EvalCacheEntry]]] = None
+    baseline_cache: List[EvalCacheEntry] = []
+
+    if log_to_pdf_path:
+        os.makedirs(log_to_pdf_path, exist_ok=True)
 
     for step in range(updates):
         # Сбор траекторий и обновление параметров
@@ -795,69 +825,156 @@ def train(
 
         # Периодически оцениваем политику на валидационном наборе
         if (step + 1) % val_interval == 0:
-            if pending_baseline is not None:
-                baseline_name, baseline_cache = pending_baseline
-                pending_baseline = None
+            current_baseline_name = baseline_name
+            keep_env_flags = [
+                (idx in display_set) or bool(log_to_pdf_path)
+                for idx in range(total_windows)
+            ]
+            max_workers = os.cpu_count() or 1
 
-            if baseline_cache is None:
-                if baseline_name != "Teacher":
-                    raise RuntimeError("Baseline cache is empty for champion")
-                baseline_cache = []
-                baseline_profits: List[float] = []
-                for window_df in val_windows:
-                    base_env = BacktestEnv(
-                        window_df,
-                        feature_cols=feature_cols,
-                        cfg=val_cfg,
-                        price_col='Open',
-                        ppo_true=True,
-                        record_history=True,
-                    )
-                    base_metrics = evaluate_profit(
-                        base_env, teacher, seq_len, feature_dim, debug=debug
-                    )
-                    baseline_cache.append(EvalCacheEntry(env=base_env, metrics=base_metrics))
-                    baseline_profits.append(base_metrics.get("Realized PnL", 0.0))
-                if baseline_profits:
-                    best_profit = float(np.mean(baseline_profits))
+            def _run_validation(model: keras.Model) -> List[EvalCacheEntry]:
+                results: List[EvalCacheEntry] = [None] * total_windows
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_idx = {
+                        executor.submit(
+                            _evaluate_window,
+                            val_windows_all[idx],
+                            model=model,
+                            feature_cols=feature_cols,
+                            cfg=val_cfg,
+                            seq_len=seq_len,
+                            feature_dim=feature_dim,
+                            price_col="Open",
+                            keep_env=keep_env_flags[idx],
+                            debug=debug,
+                        ): idx
+                        for idx in range(total_windows)
+                    }
+                    for future, idx in future_to_idx.items():
+                        results[idx] = future.result()
+                return results
 
-            val_env_profits: List[float] = []
-            current_eval_cache: List[EvalCacheEntry] = []
-            for idx, window_df in enumerate(val_windows):
-                baseline_entry = baseline_cache[idx]
-                baseline_entry.env.plot(f"PPO {baseline_name.lower()}")
-                val_env = BacktestEnv(
-                    window_df,
-                    feature_cols=feature_cols,
-                    cfg=val_cfg,
-                    price_col='Open',
-                    ppo_true=True,
-                    record_history=True,
+            baseline_entries = _run_validation(teacher)
+            actor_entries = _run_validation(actor)
+
+            baseline_total_pnl = float(
+                sum(entry.metrics.get("Realized PnL", 0.0) for entry in baseline_entries)
+            )
+            actor_total_pnl = float(
+                sum(entry.metrics.get("Realized PnL", 0.0) for entry in actor_entries)
+            )
+
+            if best_profit is None:
+                best_profit = baseline_total_pnl
+
+            if log_to_pdf_path:
+                pdf_file = os.path.join(
+                    log_to_pdf_path, f"validation_step_{step+1:04d}.pdf"
                 )
+                with PdfPages(pdf_file) as pdf:
+                    for idx in range(total_windows):
+                        base_entry = baseline_entries[idx]
+                        actor_entry = actor_entries[idx]
+                        if base_entry.env is not None:
+                            fig = base_entry.env.plot(
+                                f"PPO {current_baseline_name.lower()} window {idx}",
+                                show=False,
+                            )
+                            pdf.savefig(fig)
+                            plt.close(fig)
+                        if actor_entry.env is not None:
+                            fig = actor_entry.env.plot(
+                                f"PPO validation window {idx}", show=False
+                            )
+                            pdf.savefig(fig)
+                            plt.close(fig)
+                        text_fig = plt.figure(figsize=(8.27, 11.69))
+                        text_fig.suptitle(f"Window {idx} metrics", fontsize=14)
+                        ax = text_fig.add_subplot(111)
+                        ax.axis("off")
+                        lines = [f"Baseline ({current_baseline_name}) vs Current"]
+                        metric_keys = sorted(
+                            set(base_entry.metrics) | set(actor_entry.metrics)
+                        )
+                        for key in metric_keys:
+                            base_val = _format_metric_value(
+                                base_entry.metrics.get(key)
+                            )
+                            model_val = _format_metric_value(
+                                actor_entry.metrics.get(key)
+                            )
+                            lines.append(f"{key}: {base_val} / {model_val}")
+                        ax.text(
+                            0.01,
+                            0.99,
+                            "\n".join(lines),
+                            va="top",
+                            ha="left",
+                            family="monospace",
+                        )
+                        pdf.savefig(text_fig)
+                        plt.close(text_fig)
 
-                val_metrics = evaluate_profit(val_env, actor, seq_len, feature_dim, debug=debug)
-                val_env.plot("PPO validation")
-                print("\nMetrics (Champion / New):")
-                metric_keys = sorted(set(baseline_entry.metrics) | set(val_metrics))
+            if log_to_pdf_path:
+                for idx, entry in enumerate(baseline_entries):
+                    if idx not in display_set:
+                        entry.env = None
+                for idx, entry in enumerate(actor_entries):
+                    if idx not in display_set:
+                        entry.env = None
+
+            for raw_idx in display_indices:
+                idx = int(raw_idx)
+                baseline_entry = baseline_entries[idx]
+                actor_entry = actor_entries[idx]
+                if baseline_entry.env is not None:
+                    fig = baseline_entry.env.plot(
+                        f"PPO {current_baseline_name.lower()} window {idx}",
+                        show=not bool(log_to_pdf_path),
+                    )
+                    plt.close(fig)
+                if actor_entry.env is not None:
+                    fig = actor_entry.env.plot(
+                        f"PPO validation window {idx}",
+                        show=not bool(log_to_pdf_path),
+                    )
+                    plt.close(fig)
+                print("\nMetrics (Baseline / New):")
+                metric_keys = sorted(
+                    set(baseline_entry.metrics) | set(actor_entry.metrics)
+                )
                 for key in metric_keys:
                     base_val = baseline_entry.metrics.get(key)
-                    model_val = val_metrics.get(key)
+                    model_val = actor_entry.metrics.get(key)
                     print(
                         f"{key}: {_format_metric_value(base_val)} / {_format_metric_value(model_val)}"
                     )
 
-                val_log.append(val_metrics)
-                val_env_profits.append(val_metrics.get("Realized PnL", 0.0))
-                current_eval_cache.append(EvalCacheEntry(env=val_env, metrics=val_metrics))
+            for entry in actor_entries:
+                val_log.append(entry.metrics)
 
-            avg_profit = np.mean(np.array(val_env_profits))
+            print(
+                f"\nValidation summary ({current_baseline_name} vs Current):"
+            )
+            print(
+                f"Total Realized PnL: {baseline_total_pnl:.4f} / {actor_total_pnl:.4f}"
+            )
 
-            best_actor_path = os.path.join(save_path, f"actor_best_ep:{step+1}_rt:{avg_profit:.4f}.weights.h5")
-            best_critic_path = os.path.join(save_path, f"critic_best_ep:{step+1}_rt{avg_profit:.4f}.weights.h5")
+            best_actor_path = os.path.join(
+                save_path,
+                f"actor_best_ep:{step+1}_pnl:{actor_total_pnl:.4f}.weights.h5",
+            )
+            best_critic_path = os.path.join(
+                save_path,
+                f"critic_best_ep:{step+1}_pnl:{actor_total_pnl:.4f}.weights.h5",
+            )
 
-            if best_profit is None or avg_profit > best_profit:
-                print(f"\nНайден новый чемпион. Средний профит на валидации: {avg_profit:.5f}")
-                best_profit = avg_profit
+            if actor_total_pnl > baseline_total_pnl:
+                print(
+                    "\nНайден новый чемпион. Суммарный профит на валидации: "
+                    f"{actor_total_pnl:.5f}"
+                )
+                best_profit = actor_total_pnl
                 actor.save_weights(best_actor_path)
                 critic.save_weights(best_critic_path)
                 if teacher is not None:
@@ -865,7 +982,12 @@ def train(
                     teacher.trainable = False
                     kl_coef = teacher_kl
                     entropy_coef = c2
-                pending_baseline = ("Champion", current_eval_cache)
+                baseline_name = "Champion"
+                baseline_cache = actor_entries
+            else:
+                baseline_cache = baseline_entries
+                if best_profit is not None:
+                    best_profit = max(best_profit, baseline_total_pnl)
 
 
     actor.save_weights(os.path.join(save_path, "actor_final.weights.h5"))

@@ -170,6 +170,9 @@ def _step_single(
             position * ((next_price - entry_price) / entry_price) * cfg.leverage
         )
 
+    if penalty != 0.0:
+        realized_pnl += penalty
+
     equity = realized_pnl + unrealized
     prev_equity = prev_realized + prev_unrealized
 
@@ -179,11 +182,11 @@ def _step_single(
 
     if cfg.use_log_reward:
         # Жёстко клипуем шаговую доходность снизу чуть выше -1
-        total = pnl_step + penalty
+        total = pnl_step
         clipped = total if total > -0.999999 else -0.999999
         core = np.log1p(clipped)
     else:
-        core = pnl_step + penalty
+        core = pnl_step
     reward = cfg.reward_scale * core
 
     # print(f"POS {position} PNL {pnl_step} P {penalty} R {reward}")
@@ -508,7 +511,7 @@ class BacktestEnv:
         """Сохранить журнал событий на диск."""
         self.logs().to_csv(path, index=False)
 
-    def plot(self, title: Optional[str] = None):
+    def plot(self, title: Optional[str] = None, show: bool = True):
         """Построить набор диагностических графиков по результатам симуляции."""
 
         # Получаем журнал событий в виде DataFrame
@@ -595,7 +598,8 @@ class BacktestEnv:
             a.legend()
 
         plt.tight_layout()
-        plt.show()
+        if show:
+            plt.show()
         return fig
 
     def metrics_report(self) -> Dict[str, float]:

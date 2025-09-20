@@ -1,10 +1,14 @@
+import collections
 import os
 import sys
+import threading
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pytest
 import tensorflow as tf
 from tensorflow import keras
-import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -295,53 +299,254 @@ def test_train_validation_windows_unique_index_ranges(monkeypatch, tmp_path):
     )
 
     assert len(calls) == 1
-    _, size, replace, result = calls[0]
+    a, size, replace, result = calls[0]
+    assert a == len(index_ranges)
     assert size == len(index_ranges)
     assert replace is False
     assert np.unique(result).size == len(index_ranges)
 
 
-def test_train_validation_windows_not_enough_candidates(tmp_path):
+def test_train_validation_windows_not_enough_candidates(monkeypatch, tmp_path):
     df = make_df().iloc[:2]
     feat_cols = ["feat"]
     cfg = make_cfg()
     seq_len = 1
     feature_dim = len(feat_cols) + 5
+    original_choice = ppo_training.np.random.choice
+    calls = []
 
-    with pytest.raises(ValueError, match="Requested more validation windows"):
-        train(
-            df,
-            df,
-            cfg,
-            cfg,
-            feature_dim,
-            feat_cols,
-            seq_len,
-            teacher_weights="",
-            critic_weights="",
-            backbone_weights="",
-            save_path=str(tmp_path),
-            num_actions=4,
-            units=16,
-            dropout=0.0,
-            updates=0,
-            n_env=1,
-            rollout=1,
-            actor_lr=1e-3,
-            critic_lr=1e-3,
-            clip_ratio=0.2,
-            c1=0.5,
-            c2=0.01,
-            epochs=1,
-            batch_size=1,
-            teacher_kl=0.1,
-            kl_decay=0.5,
-            entropy_decay=1.0,
-            max_grad_norm=1.0,
-            target_kl=1.0,
-            val_interval=1,
-            n_validations=2,
+    def tracking_choice(a, size=None, replace=True, p=None):
+        calls.append((a, size, replace))
+        return original_choice(a, size=size, replace=replace, p=p)
+
+    monkeypatch.setattr(ppo_training.np.random, "choice", tracking_choice)
+
+    train(
+        df,
+        df,
+        cfg,
+        cfg,
+        feature_dim,
+        feat_cols,
+        seq_len,
+        teacher_weights="",
+        critic_weights="",
+        backbone_weights="",
+        save_path=str(tmp_path),
+        num_actions=4,
+        units=16,
+        dropout=0.0,
+        updates=0,
+        n_env=1,
+        rollout=1,
+        actor_lr=1e-3,
+        critic_lr=1e-3,
+        clip_ratio=0.2,
+        c1=0.5,
+        c2=0.01,
+        epochs=1,
+        batch_size=1,
+        teacher_kl=0.1,
+        kl_decay=0.5,
+        entropy_decay=1.0,
+        max_grad_norm=1.0,
+        target_kl=1.0,
+        val_interval=1,
+        n_validations=2,
+    )
+
+    assert len(calls) == 1
+    a, size, replace = calls[0]
+    assert a == 1
+    assert size == 1
+    assert replace is False
+
+
+def test_train_uses_all_validation_windows(monkeypatch, tmp_path):
+    df = make_df()
+    feat_cols = ["feat"]
+    cfg = make_cfg()
+    seq_len = 1
+    feature_dim = len(feat_cols) + 5
+    window_counts = collections.Counter()
+    lock = threading.Lock()
+
+    def fake_eval(window_df, **kwargs):
+        window_id = (window_df.index[0], window_df.index[-1])
+        with lock:
+            window_counts[window_id] += 1
+        return ppo_training.EvalCacheEntry(metrics={"Realized PnL": 0.0})
+
+    monkeypatch.setattr(ppo_training, "_evaluate_window", fake_eval)
+
+    def fake_collect(*args, **kwargs):
+        return ppo_training.Trajectory(
+            obs=np.zeros((1, seq_len, feature_dim), dtype=np.float32),
+            actions=np.zeros(1, dtype=np.int32),
+            advantages=np.zeros(1, dtype=np.float32),
+            returns=np.zeros(1, dtype=np.float32),
+            old_logp=np.zeros(1, dtype=np.float32),
+            masks=np.ones(1, dtype=np.float32),
         )
+
+    monkeypatch.setattr(ppo_training, "collect_trajectories", fake_collect)
+
+    def fake_update(*args, **kwargs):
+        return (
+            kwargs["kl_coef"],
+            kwargs["c2"],
+            {
+                "policy_loss": 0.0,
+                "value_loss": 0.0,
+                "entropy": 0.0,
+                "teacher_kl": 0.0,
+                "approx_kl": 0.0,
+                "clip_fraction": 0.0,
+            },
+        )
+
+    monkeypatch.setattr(ppo_training, "ppo_update", fake_update)
+
+    train(
+        df,
+        df,
+        cfg,
+        cfg,
+        feature_dim,
+        feat_cols,
+        seq_len,
+        teacher_weights="",
+        critic_weights="",
+        backbone_weights="",
+        save_path=str(tmp_path),
+        num_actions=4,
+        units=16,
+        dropout=0.0,
+        updates=1,
+        n_env=1,
+        rollout=1,
+        actor_lr=1e-3,
+        critic_lr=1e-3,
+        clip_ratio=0.2,
+        c1=0.5,
+        c2=0.01,
+        epochs=1,
+        batch_size=1,
+        teacher_kl=0.1,
+        kl_decay=0.5,
+        entropy_decay=1.0,
+        max_grad_norm=1.0,
+        target_kl=1.0,
+        val_interval=1,
+        n_validations=0,
+    )
+
+    val_required = cfg.max_steps + 1
+    expected_windows = len(df) - val_required + 1
+    assert len(window_counts) == expected_windows
+    assert all(count == 2 for count in window_counts.values())
+
+
+def test_train_logs_to_pdf(monkeypatch, tmp_path):
+    df = make_df()
+    feat_cols = ["feat"]
+    cfg = make_cfg()
+    seq_len = 1
+    feature_dim = len(feat_cols) + 5
+
+    class DummyEnv:
+        def __init__(self, idx: int):
+            self.idx = idx
+
+        def plot(self, title: str, show: bool = True):
+            fig, ax = plt.subplots()
+            ax.set_title(f"{title}-{self.idx}")
+            ax.plot([0, 1], [0, 1])
+            if show:
+                plt.show()
+            return fig
+
+    def fake_eval(window_df, **kwargs):
+        keep_env = kwargs.get("keep_env", False)
+        window_id = hash((window_df.index[0], window_df.index[-1]))
+        entry = ppo_training.EvalCacheEntry(
+            metrics={"Realized PnL": float(window_id % 5)}
+        )
+        if keep_env:
+            entry.env = DummyEnv(window_id)
+        return entry
+
+    monkeypatch.setattr(ppo_training, "_evaluate_window", fake_eval)
+
+    def fake_collect(*args, **kwargs):
+        return ppo_training.Trajectory(
+            obs=np.zeros((1, seq_len, feature_dim), dtype=np.float32),
+            actions=np.zeros(1, dtype=np.int32),
+            advantages=np.zeros(1, dtype=np.float32),
+            returns=np.zeros(1, dtype=np.float32),
+            old_logp=np.zeros(1, dtype=np.float32),
+            masks=np.ones(1, dtype=np.float32),
+        )
+
+    monkeypatch.setattr(ppo_training, "collect_trajectories", fake_collect)
+
+    def fake_update(*args, **kwargs):
+        return (
+            kwargs["kl_coef"],
+            kwargs["c2"],
+            {
+                "policy_loss": 0.0,
+                "value_loss": 0.0,
+                "entropy": 0.0,
+                "teacher_kl": 0.0,
+                "approx_kl": 0.0,
+                "clip_fraction": 0.0,
+            },
+        )
+
+    monkeypatch.setattr(ppo_training, "ppo_update", fake_update)
+
+    log_dir = tmp_path / "pdf_logs"
+
+    train(
+        df,
+        df,
+        cfg,
+        cfg,
+        feature_dim,
+        feat_cols,
+        seq_len,
+        teacher_weights="",
+        critic_weights="",
+        backbone_weights="",
+        save_path=str(tmp_path),
+        num_actions=4,
+        units=16,
+        dropout=0.0,
+        updates=1,
+        n_env=1,
+        rollout=1,
+        actor_lr=1e-3,
+        critic_lr=1e-3,
+        clip_ratio=0.2,
+        c1=0.5,
+        c2=0.01,
+        epochs=1,
+        batch_size=1,
+        teacher_kl=0.1,
+        kl_decay=0.5,
+        entropy_decay=1.0,
+        max_grad_norm=1.0,
+        target_kl=1.0,
+        val_interval=1,
+        n_validations=2,
+        log_to_pdf_path=str(log_dir),
+    )
+
+    pdf_files = list(log_dir.glob("validation_step_*.pdf"))
+    assert len(pdf_files) == 1
+    assert pdf_files[0].stat().st_size > 0
+
 
 def test_train_freeze_backbones(tmp_path):
     df = make_df()
