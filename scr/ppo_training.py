@@ -1134,7 +1134,7 @@ def testing_simulation(
 
     pdf_ctx: Optional[PdfPages] = None
     if log_to_pdf:
-        weights = actor_weights.split("/")[-1].split(".")[0] +  actor_weights.split("/")[-1].split(".")[1] + "_testing.pdf"
+        weights = actor_weights.split("/")[-1].split(".")[0] + "." + actor_weights.split("/")[-1].split(".")[1] + "_testing.pdf"
         base_dir = os.fspath(os.path.dirname(os.fspath(actor_weights)) or ".")
         pdf_path = os.path.join(base_dir, "testing", weights)
         os.makedirs(os.path.dirname(pdf_path) or ".", exist_ok=True)
