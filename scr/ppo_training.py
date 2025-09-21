@@ -498,7 +498,8 @@ def _ppo_batch_update(
             tf.reduce_sum(tf.exp(logp_all) * logp_all, axis=-1)
         )
         value = critic(b_obs, training=True)[:, 0]
-        value_loss = tf.reduce_mean(tf.square(b_ret - value))
+        value_error = b_ret - value
+        value_loss = tf.reduce_mean(tf.square(value_error))
         t_kl = tf.constant(0.0)
         if teacher is not None and kl_coef > 0.0:
             t_logits = teacher(b_obs, training=False)
@@ -523,7 +524,18 @@ def _ppo_batch_update(
     clipfrac = tf.reduce_mean(
         tf.cast(tf.abs(ratio - 1.0) > clip_ratio, tf.float32)
     )
-    return policy_loss, value_loss, entropy, t_kl, approx_kl, clipfrac
+    value_rmse = tf.sqrt(tf.maximum(value_loss, 0.0))
+    value_mae = tf.reduce_mean(tf.abs(value_error))
+    return (
+        policy_loss,
+        value_loss,
+        entropy,
+        t_kl,
+        approx_kl,
+        clipfrac,
+        value_rmse,
+        value_mae,
+    )
 
 
 def ppo_update(
@@ -571,6 +583,8 @@ def ppo_update(
     teacher_kls: List[float] = []
     approx_kls: List[float] = []
     clipfracs: List[float] = []
+    value_rmses: List[float] = []
+    value_maes: List[float] = []
 
     if debug:
         print("\nUpdating PPO:")
@@ -587,6 +601,8 @@ def ppo_update(
                 t_kl,
                 approx_kl,
                 clipfrac,
+                value_rmse,
+                value_mae,
             ) = _ppo_batch_update(
                 actor,
                 critic,
@@ -612,6 +628,8 @@ def ppo_update(
             teacher_kls.append(float(t_kl))
             approx_kls.append(float(approx_kl))
             clipfracs.append(float(clipfrac))
+            value_rmses.append(float(value_rmse))
+            value_maes.append(float(value_mae))
             
         if debug:
             print(
@@ -627,6 +645,8 @@ def ppo_update(
         "teacher_kl": float(np.mean(teacher_kls)),
         "approx_kl": float(np.mean(approx_kls)),
         "clip_fraction": float(np.mean(clipfracs)),
+        "value_rmse": float(np.mean(value_rmses)),
+        "value_mae": float(np.mean(value_maes)),
     }
     return kl_coef * kl_decay, c2 * entropy_decay, metrics
 
@@ -862,8 +882,15 @@ def train(
             target_kl=target_kl,
             debug=debug,
         )
-        avg_ret = float(np.mean(traj.returns))
+        returns = np.asarray(traj.returns, dtype=np.float32)
+        advantages_raw = np.asarray(traj.advantages, dtype=np.float32)
+        avg_ret = float(np.mean(returns))
         metrics["avg_return"] = avg_ret
+        metrics["returns_std"] = float(np.std(returns))
+        metrics["returns_mean_abs"] = float(np.mean(np.abs(returns)))
+        metrics["adv_mean"] = float(np.mean(advantages_raw))
+        metrics["adv_std"] = float(np.std(advantages_raw))
+        metrics["adv_mean_abs"] = float(np.mean(np.abs(advantages_raw)))
         metrics["entropy_coef"] = current_c2
         train_log.append(metrics)
         if debug:

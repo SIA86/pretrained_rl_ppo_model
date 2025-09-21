@@ -170,6 +170,8 @@ def test_ppo_update_kl_decay():
     assert np.isclose(new_kl, 0.05)
     assert np.isclose(new_c2, 0.001)
     assert "teacher_kl" in metrics
+    assert "value_rmse" in metrics
+    assert "value_mae" in metrics
 
 
 def test_collect_trajectories_nan_probs():
@@ -437,6 +439,8 @@ def test_train_uses_all_validation_windows(monkeypatch, tmp_path):
                 "teacher_kl": 0.0,
                 "approx_kl": 0.0,
                 "clip_fraction": 0.0,
+                "value_rmse": 0.0,
+                "value_mae": 0.0,
             },
         )
 
@@ -537,6 +541,8 @@ def test_train_logs_to_pdf(monkeypatch, tmp_path):
                 "teacher_kl": 0.0,
                 "approx_kl": 0.0,
                 "clip_fraction": 0.0,
+                "value_rmse": 0.0,
+                "value_mae": 0.0,
             },
         )
 
@@ -706,6 +712,8 @@ def test_train_champion_requires_deals(
             "teacher_kl": 0.0,
             "approx_kl": 0.0,
             "clip_fraction": 0.0,
+            "value_rmse": 0.0,
+            "value_mae": 0.0,
         }
 
     monkeypatch.setattr(ppo_training, "ppo_update", fake_update)
