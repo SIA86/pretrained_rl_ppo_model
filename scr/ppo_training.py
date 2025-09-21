@@ -12,6 +12,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+import weakref
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -73,6 +74,30 @@ class EvalCacheEntry:
 
 
 IntervalLike = pd.Index | np.ndarray | Iterable[pd.Timestamp]
+
+_ACTOR_LOGITS_CACHE: "weakref.WeakKeyDictionary[keras.Model, Dict[Tuple[int, int, str], tf.types.experimental.ConcreteFunction]]" = weakref.WeakKeyDictionary()
+
+
+def _get_actor_logits_fn(
+    actor: keras.Model, seq_len: int, feature_dim: int
+) -> Tuple[tf.types.experimental.ConcreteFunction, tf.dtypes.DType]:
+    """Return cached tf.function for actor inference."""
+
+    cache = _ACTOR_LOGITS_CACHE.setdefault(actor, {})
+    actor_dtype = getattr(actor, "compute_dtype", None) or getattr(actor, "dtype", None)
+    dtype = tf.as_dtype(actor_dtype or tf.float32)
+    key = (int(seq_len), int(feature_dim), dtype.name)
+    fn = cache.get(key)
+    if fn is None:
+        input_spec = tf.TensorSpec(shape=(None, seq_len, feature_dim), dtype=dtype)
+
+        @tf.function(input_signature=(input_spec,), reduce_retracing=True)
+        def _actor_logits(batch_features: tf.Tensor) -> tf.Tensor:
+            return actor(batch_features, training=False)
+
+        cache[key] = _actor_logits
+        fn = _actor_logits
+    return fn, dtype
 
 
 def _normalize_interval(
@@ -596,10 +621,7 @@ def evaluate_profit(
 ) -> Dict[str, float]:
     """Запустить политику в среде и вернуть метрики."""
 
-    @tf.function
-    def _actor_logits(batch_features: tf.Tensor) -> tf.Tensor:
-        return actor(batch_features, training=False)
-
+    logits_fn, input_dtype = _get_actor_logits_fn(actor, seq_len, feature_dim)
     obs = env.reset()
     state_hist = [obs["state"].copy()]
     for _ in range(seq_len - 1):
@@ -614,7 +636,10 @@ def evaluate_profit(
         state_window = np.stack(state_hist[t - seq_len + 1 : t + 1])
         feat = np.concatenate([window, state_window], axis=1)
         mask = env.action_mask()
-        logits = _actor_logits(feat[None, ...])
+        feat_batch = tf.convert_to_tensor(
+            feat[None, ...], dtype=input_dtype, name="eval_features"
+        )
+        logits = logits_fn(feat_batch)
         masked = apply_action_mask(logits, mask[None, :])
         action = int(tf.argmax(masked, axis=-1)[0])
         obs, _, done, _ = env.step(action)
@@ -773,7 +798,10 @@ def train(
     baseline_cache: List[EvalCacheEntry] = []
 
     if log_to_pdf_path:
-        path_to_log_pdf = os.path.join(save_path, 'validation')
+        if isinstance(log_to_pdf_path, (str, os.PathLike)):
+            path_to_log_pdf = os.fspath(log_to_pdf_path)
+        else:
+            path_to_log_pdf = os.path.join(save_path, "validation")
         os.makedirs(path_to_log_pdf, exist_ok=True)
 
     for step in range(updates):

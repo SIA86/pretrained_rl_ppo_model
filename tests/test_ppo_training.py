@@ -50,6 +50,18 @@ def build_models(seq_len, feature_dim, num_actions=4):
     return actor, critic
 
 
+def test_get_actor_logits_fn_caches():
+    seq_len = 2
+    feature_dim = 7
+    actor, _ = build_models(seq_len, feature_dim)
+
+    fn1, dtype1 = ppo_training._get_actor_logits_fn(actor, seq_len, feature_dim)
+    fn2, dtype2 = ppo_training._get_actor_logits_fn(actor, seq_len, feature_dim)
+
+    assert fn1 is fn2
+    assert dtype1 == dtype2 == tf.as_dtype(actor.compute_dtype)
+
+
 def test_build_and_collect():
     train_df = make_df()
     feat_cols = ["feat"]
