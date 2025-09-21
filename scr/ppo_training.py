@@ -1044,35 +1044,161 @@ def train(
     return actor, critic, train_log, val_log
 
 def testing_simulation(
-    test_df,
-    actor_weights,
-    seq_len,
-    feature_dim,
-    units,
-    dropout,
-    num_actions,
-    feature_cols,
-    test_cfg,
-    debug=False
-):
+    test_df: pd.DataFrame,
+    actor_weights: str | os.PathLike[str],
+    seq_len: int,
+    feature_dim: int,
+    units: int,
+    dropout: float,
+    num_actions: int,
+    feature_cols: List[str],
+    test_cfg: EnvConfig,
+    *,
+    index_ranges: Optional[Sequence[IntervalLike]] = None,
+    log_to_pdf: bool | str = False,
+    debug: bool = False,
+) -> None:
     actor_backbone = build_backbone(seq_len, feature_dim, units=units, dropout=dropout)
     actor = build_head(actor_backbone, num_actions)
     actor.load_weights(actor_weights)
 
-    test_env = BacktestEnv(
-        test_df,
-        feature_cols=feature_cols,
-        price_col="Open",
-        cfg=test_cfg,
-        ppo_true=True,
-        record_history=True,
-    )
-    evaluate_profit(test_env, actor, seq_len, feature_dim, debug=debug)
-    fig = test_env.plot("PPO testing")
-    metrics = test_env.metrics_report()
-    print("\nMetrics Report")
-    for k,v in metrics.items():
-      print(f"{k}: {v}")
+    required = test_cfg.max_steps + 1
+    if required <= 0:
+        raise ValueError("test_cfg.max_steps must be non-negative")
+
+    if index_ranges:
+        test_windows = _prepare_validation_windows(test_df, index_ranges, required)
+        if not test_windows:
+            raise ValueError("No valid testing intervals in index_ranges")
+    else:
+        max_start = len(test_df) - required
+        if max_start < 0:
+            raise ValueError("DataFrame too short for given parameters")
+        test_windows = [
+            test_df.iloc[start : start + required].copy()
+            for start in range(max_start + 1)
+        ]
+
+    total_windows = len(test_windows)
+    if total_windows == 0:
+        raise ValueError("No testing windows available")
+
+    metrics_sum: Dict[str, float] = {}
+    metrics_count: Dict[str, int] = {}
+    numeric_types = (int, float, np.integer, np.floating)
+
+    pdf_ctx: Optional[PdfPages] = None
+    if log_to_pdf:
+        if isinstance(log_to_pdf, (str, os.PathLike)):
+            pdf_path = os.fspath(log_to_pdf)
+        else:
+            base_dir = os.fspath(os.path.dirname(os.fspath(actor_weights)) or ".")
+            pdf_path = os.path.join(base_dir, "testing_windows.pdf")
+        os.makedirs(os.path.dirname(pdf_path) or ".", exist_ok=True)
+        pdf_ctx = PdfPages(pdf_path)
+
+    try:
+        for idx, window_df in enumerate(test_windows):
+            entry = _evaluate_window(
+                window_df,
+                model=actor,
+                feature_cols=feature_cols,
+                cfg=test_cfg,
+                seq_len=seq_len,
+                feature_dim=feature_dim,
+                price_col="Open",
+                keep_env=True,
+                debug=debug,
+            )
+            metrics = entry.metrics
+
+            if pdf_ctx and entry.env is not None:
+                fig = entry.env.plot(f"PPO testing window {idx}", show=False)
+                pdf_ctx.savefig(fig)
+                plt.close(fig)
+
+            if entry.env is not None:
+                fig = entry.env.plot(f"PPO testing window {idx}", show=True)
+                plt.close(fig)
+
+            print(f"\nMetrics Report (window {idx})")
+            for key in sorted(metrics):
+                value = metrics[key]
+                if isinstance(value, numeric_types) or value is None:
+                    formatted = _format_metric_value(value)
+                else:
+                    formatted = str(value)
+                print(f"{key}: {formatted}")
+
+            if pdf_ctx:
+                text_fig = plt.figure(figsize=(8.27, 11.69))
+                text_fig.suptitle(f"Window {idx} metrics", fontsize=14)
+                ax = text_fig.add_subplot(111)
+                ax.axis("off")
+                lines = []
+                for key in sorted(metrics):
+                    value = metrics[key]
+                    if isinstance(value, numeric_types) or value is None:
+                        formatted = _format_metric_value(value)
+                    else:
+                        formatted = str(value)
+                    lines.append(f"{key}: {formatted}")
+                ax.text(
+                    0.01,
+                    0.99,
+                    "\n".join(lines) if lines else "No metrics reported",
+                    va="top",
+                    ha="left",
+                    family="monospace",
+                )
+                pdf_ctx.savefig(text_fig)
+                plt.close(text_fig)
+
+            for key, value in metrics.items():
+                if isinstance(value, numeric_types):
+                    metrics_sum[key] = metrics_sum.get(key, 0.0) + float(value)
+                    metrics_count[key] = metrics_count.get(key, 0) + 1
+    finally:
+        if pdf_ctx:
+            summary_lines: List[str] = []
+            if metrics_sum:
+                summary_lines.append("Aggregated metrics:")
+                for key in sorted(metrics_sum):
+                    if key == "Realized PnL":
+                        agg_value = metrics_sum[key]
+                    else:
+                        count = metrics_count.get(key, total_windows)
+                        if count <= 0:
+                            continue
+                        agg_value = metrics_sum[key] / count
+                    summary_lines.append(f"{key}: {_format_metric_value(agg_value)}")
+            summary_fig = plt.figure(figsize=(8.27, 11.69))
+            summary_fig.suptitle("Aggregate summary", fontsize=14)
+            ax = summary_fig.add_subplot(111)
+            ax.axis("off")
+            ax.text(
+                0.01,
+                0.99,
+                "\n".join(summary_lines) if summary_lines else "No metrics collected.",
+                va="top",
+                ha="left",
+                family="monospace",
+            )
+            pdf_ctx.savefig(summary_fig)
+            plt.close(summary_fig)
+            pdf_ctx.close()
+
+    if metrics_sum:
+        print("\nAggregated metrics:")
+        for key in sorted(metrics_sum):
+            if key == "Realized PnL":
+                agg_value = metrics_sum[key]
+            else:
+                count = metrics_count.get(key, total_windows)
+                if count <= 0:
+                    continue
+                agg_value = metrics_sum[key] / count
+            print(f"{key}: {_format_metric_value(agg_value)}")
 
 
 __all__ = [
