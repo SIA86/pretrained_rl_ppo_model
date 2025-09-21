@@ -9,6 +9,7 @@ teacher‑модели с затухающим коэффициентом и р�
 from __future__ import annotations
 
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -75,30 +76,47 @@ class EvalCacheEntry:
 
 IntervalLike = pd.Index | np.ndarray | Iterable[pd.Timestamp]
 
-_ACTOR_LOGITS_CACHE: "weakref.WeakKeyDictionary[keras.Model, Dict[Tuple[int, int, str], tf.types.experimental.ConcreteFunction]]" = weakref.WeakKeyDictionary()
+_ACTOR_LOGITS_CACHE: "weakref.WeakKeyDictionary[keras.Model, Dict[Tuple[int, int, str], Tuple[tf.types.experimental.ConcreteFunction, tf.dtypes.DType]]]" = weakref.WeakKeyDictionary()
+_ACTOR_LOGITS_LOCK = threading.Lock()
 
 
 def _get_actor_logits_fn(
     actor: keras.Model, seq_len: int, feature_dim: int
 ) -> Tuple[tf.types.experimental.ConcreteFunction, tf.dtypes.DType]:
-    """Return cached tf.function for actor inference."""
+    """Return cached ConcreteFunction for actor inference."""
 
-    cache = _ACTOR_LOGITS_CACHE.setdefault(actor, {})
+    inferred_shape = getattr(actor, "input_shape", None)
+    if isinstance(inferred_shape, list):
+        for candidate in inferred_shape:
+            if isinstance(candidate, (list, tuple)) and len(candidate) >= 3:
+                inferred_shape = candidate
+                break
+    if isinstance(inferred_shape, tuple) and len(inferred_shape) >= 3:
+        seq_candidate = inferred_shape[-2]
+        feat_candidate = inferred_shape[-1]
+        if isinstance(seq_candidate, int) and seq_candidate > 0:
+            seq_len = seq_candidate
+        if isinstance(feat_candidate, int) and feat_candidate > 0:
+            feature_dim = feat_candidate
+
     actor_dtype = getattr(actor, "compute_dtype", None) or getattr(actor, "dtype", None)
     dtype = tf.as_dtype(actor_dtype or tf.float32)
     key = (int(seq_len), int(feature_dim), dtype.name)
-    fn = cache.get(key)
-    if fn is None:
-        input_spec = tf.TensorSpec(shape=(None, seq_len, feature_dim), dtype=dtype)
 
-        @tf.function(input_signature=(input_spec,), reduce_retracing=True)
-        def _actor_logits(batch_features: tf.Tensor) -> tf.Tensor:
-            return actor(batch_features, training=False)
+    with _ACTOR_LOGITS_LOCK:
+        cache = _ACTOR_LOGITS_CACHE.setdefault(actor, {})
+        entry = cache.get(key)
+        if entry is None:
+            input_spec = tf.TensorSpec(shape=(None, seq_len, feature_dim), dtype=dtype)
 
-        cache[key] = _actor_logits
-        fn = _actor_logits
-    return fn, dtype
+            @tf.function(input_signature=(input_spec,), reduce_retracing=True)
+            def _actor_logits(batch_features: tf.Tensor) -> tf.Tensor:
+                return actor(batch_features, training=False)
 
+            concrete = _actor_logits.get_concrete_function()
+            entry = (concrete, dtype)
+            cache[key] = entry
+    return entry
 
 def _normalize_interval(
     index: pd.DatetimeIndex, interval: IntervalLike
