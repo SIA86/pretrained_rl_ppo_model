@@ -728,6 +728,7 @@ def train(
     target_kl: float,
     val_interval: int,
     n_validations: int = 1,
+    deals_frequency: float = float(0.8),
     gamma: float = 0.99,
     lam: float = 0.95,
     index_ranges: Optional[Sequence[IntervalLike]] = None,
@@ -911,6 +912,12 @@ def train(
             actor_total_pnl = float(
                 sum(entry.metrics.get("Realized PnL", 0.0) for entry in actor_entries)
             )
+            baseline_total_deals = int(
+                sum(entry.metrics.get("Closed trades", 0) for entry in baseline_entries)
+            )
+            actor_total_deals = int(
+                sum(entry.metrics.get("Closed trades", 0) for entry in actor_entries)
+            )
 
             if best_profit is None:
                 best_profit = baseline_total_pnl
@@ -1007,6 +1014,12 @@ def train(
             print(
                 f"Total Realized PnL: {baseline_total_pnl:.4f} / {actor_total_pnl:.4f}"
             )
+            required_deals = int(np.floor(deals_frequency * baseline_total_deals))
+            print(
+                "Total Closed trades: "
+                f"{baseline_total_deals:d} / {actor_total_deals:d} "
+                f"(threshold {deals_frequency:.4f}× -> {required_deals:d})"
+            )
 
             best_actor_path = os.path.join(
                 save_path,
@@ -1017,7 +1030,8 @@ def train(
                 f"critic_best_ep:{step+1}_pnl:{actor_total_pnl:.4f}.weights.h5",
             )
 
-            if actor_total_pnl > baseline_total_pnl:
+            deals_ok = actor_total_deals >= required_deals
+            if actor_total_pnl > baseline_total_pnl and deals_ok:
                 print(
                     "\nНайден новый чемпион. Суммарный профит на валидации: "
                     f"{actor_total_pnl:.5f}"
@@ -1036,6 +1050,11 @@ def train(
                 baseline_cache = baseline_entries
                 if best_profit is not None:
                     best_profit = max(best_profit, baseline_total_pnl)
+                if actor_total_pnl > baseline_total_pnl and not deals_ok:
+                    print(
+                        "Champion rejected: insufficient Closed trades "
+                        f"({actor_total_deals:d} < {required_deals:d})"
+                    )
 
 
     actor.save_weights(os.path.join(save_path, "actor_final.weights.h5"))

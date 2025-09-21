@@ -329,6 +329,7 @@ def test_train_validation_windows_unique_index_ranges(monkeypatch, tmp_path):
         val_interval=1,
         n_validations=len(index_ranges),
         index_ranges=index_ranges,
+        deals_frequency=0.8,
     )
 
     assert len(calls) == 1
@@ -386,6 +387,7 @@ def test_train_validation_windows_not_enough_candidates(monkeypatch, tmp_path):
         target_kl=1.0,
         val_interval=1,
         n_validations=2,
+        deals_frequency=0.8,
     )
 
     assert len(calls) == 1
@@ -472,6 +474,7 @@ def test_train_uses_all_validation_windows(monkeypatch, tmp_path):
         target_kl=1.0,
         val_interval=1,
         n_validations=0,
+        deals_frequency=0.8,
     )
 
     val_required = cfg.max_steps + 1
@@ -574,6 +577,7 @@ def test_train_logs_to_pdf(monkeypatch, tmp_path):
         val_interval=1,
         n_validations=2,
         log_to_pdf_path=str(log_dir),
+        deals_frequency=0.8,
     )
 
     pdf_files = list(log_dir.glob("validation_step_*.pdf"))
@@ -623,9 +627,133 @@ def test_train_freeze_backbones(tmp_path):
         target_kl=1.0,
         val_interval=1,
         fine_tune=True,
+        deals_frequency=0.8,
     )
     actor_layers = [l for l in actor.layers if l.name.startswith("feat_")]
     critic_layers = [l for l in critic.layers if l.name.startswith("feat_")]
     assert actor_layers and critic_layers
     assert not any(layer.trainable for layer in actor_layers)
     assert not any(layer.trainable for layer in critic_layers)
+
+
+@pytest.mark.parametrize(
+    ("actor_pnl", "actor_deals", "expected_promotions"),
+    ((2.0, 9, 1), (2.0, 7, 0), (0.5, 9, 0)),
+)
+def test_train_champion_requires_deals(
+    monkeypatch, tmp_path, actor_pnl, actor_deals, expected_promotions
+):
+    df = make_df()
+    feat_cols = ["feat"]
+    cfg = make_cfg()
+    seq_len = 1
+    feature_dim = len(feat_cols) + 5
+
+    class DummyModel:
+        def __init__(self):
+            self.trainable = True
+            self._weights: list[float] = []
+
+        def load_weights(self, *args, **kwargs):
+            return self
+
+        def save_weights(self, path):
+            saved_paths.append(path)
+
+        def set_weights(self, weights):
+            self._weights = list(weights)
+
+        def get_weights(self):
+            return list(self._weights)
+
+    saved_paths: list[str] = []
+    refs: dict[str, DummyModel] = {}
+
+    def build_backbone_stub(*args, **kwargs):
+        return DummyModel()
+
+    def build_head_stub(backbone, units):
+        model = DummyModel()
+        if units == 1:
+            refs["critic"] = model
+        else:
+            if "teacher" not in refs:
+                refs["teacher"] = model
+            else:
+                refs["actor"] = model
+        return model
+
+    monkeypatch.setattr(ppo_training, "build_backbone", build_backbone_stub)
+    monkeypatch.setattr(ppo_training, "build_head", build_head_stub)
+
+    def fake_collect(*args, **kwargs):
+        return ppo_training.Trajectory(
+            obs=np.zeros((1, seq_len, feature_dim), dtype=np.float32),
+            actions=np.zeros(1, dtype=np.int32),
+            advantages=np.zeros(1, dtype=np.float32),
+            returns=np.zeros(1, dtype=np.float32),
+            old_logp=np.zeros(1, dtype=np.float32),
+            masks=np.ones(1, dtype=np.float32),
+        )
+
+    monkeypatch.setattr(ppo_training, "collect_trajectories", fake_collect)
+
+    def fake_update(*args, **kwargs):
+        return kwargs["kl_coef"], kwargs["c2"], {
+            "policy_loss": 0.0,
+            "value_loss": 0.0,
+            "entropy": 0.0,
+            "teacher_kl": 0.0,
+            "approx_kl": 0.0,
+            "clip_fraction": 0.0,
+        }
+
+    monkeypatch.setattr(ppo_training, "ppo_update", fake_update)
+
+    def fake_eval(window_df, *, model, **kwargs):
+        actor_model = refs.get("actor")
+        if actor_model is not None and model is actor_model:
+            metrics = {"Realized PnL": actor_pnl, "Closed trades": actor_deals}
+        else:
+            metrics = {"Realized PnL": 1.0, "Closed trades": 10}
+        return ppo_training.EvalCacheEntry(metrics=metrics)
+
+    monkeypatch.setattr(ppo_training, "_evaluate_window", fake_eval)
+
+    train(
+        df,
+        df,
+        cfg,
+        cfg,
+        feature_dim,
+        feat_cols,
+        seq_len,
+        teacher_weights="",
+        critic_weights="",
+        backbone_weights="",
+        save_path=str(tmp_path),
+        num_actions=4,
+        units=16,
+        dropout=0.0,
+        updates=1,
+        n_env=1,
+        rollout=1,
+        actor_lr=1e-3,
+        critic_lr=1e-3,
+        clip_ratio=0.2,
+        c1=0.5,
+        c2=0.01,
+        epochs=1,
+        batch_size=1,
+        teacher_kl=0.1,
+        kl_decay=0.5,
+        entropy_decay=1.0,
+        max_grad_norm=1.0,
+        target_kl=1.0,
+        val_interval=1,
+        deals_frequency=0.8,
+        log_to_pdf_path=False,
+    )
+
+    actor_best_saves = [p for p in saved_paths if "actor_best" in p]
+    assert len(actor_best_saves) == expected_promotions

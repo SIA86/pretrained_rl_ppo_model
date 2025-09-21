@@ -97,6 +97,7 @@ def main() -> None:
         max_grad_norm=0.5,
         target_kl=0.01,
         val_interval=1,
+        deals_frequency=0.8,
     )
     print("PPO training completed")
 
