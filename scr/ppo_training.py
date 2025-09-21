@@ -9,9 +9,11 @@ teacher‑модели с затухающим коэффициентом и р�
 from __future__ import annotations
 
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+import weakref
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -73,6 +75,48 @@ class EvalCacheEntry:
 
 
 IntervalLike = pd.Index | np.ndarray | Iterable[pd.Timestamp]
+
+_ACTOR_LOGITS_CACHE: "weakref.WeakKeyDictionary[keras.Model, Dict[Tuple[int, int, str], Tuple[tf.types.experimental.ConcreteFunction, tf.dtypes.DType]]]" = weakref.WeakKeyDictionary()
+_ACTOR_LOGITS_LOCK = threading.Lock()
+
+
+def _get_actor_logits_fn(
+    actor: keras.Model, seq_len: int, feature_dim: int
+) -> Tuple[tf.types.experimental.ConcreteFunction, tf.dtypes.DType]:
+    """Return cached ConcreteFunction for actor inference."""
+
+    inferred_shape = getattr(actor, "input_shape", None)
+    if isinstance(inferred_shape, list):
+        for candidate in inferred_shape:
+            if isinstance(candidate, (list, tuple)) and len(candidate) >= 3:
+                inferred_shape = candidate
+                break
+    if isinstance(inferred_shape, tuple) and len(inferred_shape) >= 3:
+        seq_candidate = inferred_shape[-2]
+        feat_candidate = inferred_shape[-1]
+        if isinstance(seq_candidate, int) and seq_candidate > 0:
+            seq_len = seq_candidate
+        if isinstance(feat_candidate, int) and feat_candidate > 0:
+            feature_dim = feat_candidate
+
+    actor_dtype = getattr(actor, "compute_dtype", None) or getattr(actor, "dtype", None)
+    dtype = tf.as_dtype(actor_dtype or tf.float32)
+    key = (int(seq_len), int(feature_dim), dtype.name)
+
+    with _ACTOR_LOGITS_LOCK:
+        cache = _ACTOR_LOGITS_CACHE.setdefault(actor, {})
+        entry = cache.get(key)
+        if entry is None:
+            input_spec = tf.TensorSpec(shape=(None, seq_len, feature_dim), dtype=dtype)
+
+            @tf.function(input_signature=(input_spec,), reduce_retracing=True)
+            def _actor_logits(batch_features: tf.Tensor) -> tf.Tensor:
+                return actor(batch_features, training=False)
+
+            concrete = _actor_logits.get_concrete_function()
+            entry = (concrete, dtype)
+            cache[key] = entry
+    return entry
 
 
 def _normalize_interval(
@@ -596,10 +640,7 @@ def evaluate_profit(
 ) -> Dict[str, float]:
     """Запустить политику в среде и вернуть метрики."""
 
-    @tf.function
-    def _actor_logits(batch_features: tf.Tensor) -> tf.Tensor:
-        return actor(batch_features, training=False)
-
+    logits_fn, input_dtype = _get_actor_logits_fn(actor, seq_len, feature_dim)
     obs = env.reset()
     state_hist = [obs["state"].copy()]
     for _ in range(seq_len - 1):
@@ -614,7 +655,10 @@ def evaluate_profit(
         state_window = np.stack(state_hist[t - seq_len + 1 : t + 1])
         feat = np.concatenate([window, state_window], axis=1)
         mask = env.action_mask()
-        logits = _actor_logits(feat[None, ...])
+        feat_batch = tf.convert_to_tensor(
+            feat[None, ...], dtype=input_dtype, name="eval_features"
+        )
+        logits = logits_fn(feat_batch)
         masked = apply_action_mask(logits, mask[None, :])
         action = int(tf.argmax(masked, axis=-1)[0])
         obs, _, done, _ = env.step(action)
@@ -773,7 +817,10 @@ def train(
     baseline_cache: List[EvalCacheEntry] = []
 
     if log_to_pdf_path:
-        path_to_log_pdf = os.path.join(save_path, 'validation')
+        if isinstance(log_to_pdf_path, (str, os.PathLike)):
+            path_to_log_pdf = os.fspath(log_to_pdf_path)
+        else:
+            path_to_log_pdf = os.path.join(save_path, "validation")
         os.makedirs(path_to_log_pdf, exist_ok=True)
 
     for step in range(updates):

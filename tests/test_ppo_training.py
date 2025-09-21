@@ -2,6 +2,7 @@ import collections
 import os
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -48,6 +49,39 @@ def build_models(seq_len, feature_dim, num_actions=4):
     actor = build_head(actor_backbone, num_actions)
     critic = build_head(critic_backbone, 1)
     return actor, critic
+
+
+def test_get_actor_logits_fn_caches():
+    seq_len = 2
+    feature_dim = 7
+    actor, _ = build_models(seq_len, feature_dim)
+
+    fn1, dtype1 = ppo_training._get_actor_logits_fn(actor, seq_len, feature_dim)
+    fn2, dtype2 = ppo_training._get_actor_logits_fn(actor, seq_len, feature_dim)
+
+    assert fn1 is fn2
+    assert dtype1 == dtype2 == tf.as_dtype(actor.compute_dtype)
+    assert isinstance(fn1, tf.types.experimental.ConcreteFunction)
+
+
+def test_get_actor_logits_fn_threadsafe():
+    seq_len = 3
+    feature_dim = 5
+    actor, _ = build_models(seq_len, feature_dim)
+
+    results = []
+
+    def worker():
+        results.append(ppo_training._get_actor_logits_fn(actor, seq_len, feature_dim))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(worker) for _ in range(16)]
+        for future in futures:
+            future.result()
+
+    first_fn, first_dtype = results[0]
+    assert all(fn is first_fn for fn, _ in results)
+    assert all(dtype == first_dtype for _, dtype in results)
 
 
 def test_build_and_collect():
