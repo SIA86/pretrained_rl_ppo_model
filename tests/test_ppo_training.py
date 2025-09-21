@@ -83,7 +83,6 @@ def test_get_actor_logits_fn_threadsafe():
     assert all(fn is first_fn for fn, _ in results)
     assert all(dtype == first_dtype for _, dtype in results)
 
-
 def test_build_and_collect():
     train_df = make_df()
     feat_cols = ["feat"]

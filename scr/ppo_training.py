@@ -118,7 +118,6 @@ def _get_actor_logits_fn(
             cache[key] = entry
     return entry
 
-
 def _normalize_interval(
     index: pd.DatetimeIndex, interval: IntervalLike
 ) -> pd.DatetimeIndex:
