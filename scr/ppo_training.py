@@ -612,12 +612,12 @@ def ppo_update(
             teacher_kls.append(float(t_kl))
             approx_kls.append(float(approx_kl))
             clipfracs.append(float(clipfrac))
-            if debug:
-                print(
-                    f"Epoch {ep+1}/{epochs}: batch: policy_loss={policy_loss:.5f} value_loss={value_loss:.5f} entropy={entropy:.5f} approx_kl={approx_kls[-1]:.5f}"
-                )
-            if target_kl is not None and approx_kls[-1] > target_kl:
-                break
+        if debug:
+            print(
+                f"Epoch {ep+1}/{epochs}: batch: policy_loss={policy_loss:.5f} value_loss={value_loss:.5f} entropy={entropy:.5f} approx_kl={approx_kls[-1]:.5f}"
+            )
+        if target_kl is not None and approx_kls[-1] > target_kl:
+            break
 
     metrics = {
         "policy_loss": float(np.mean(pi_losses)),
