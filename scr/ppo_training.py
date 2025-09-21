@@ -1103,16 +1103,13 @@ def testing_simulation(
         raise ValueError("No testing windows available")
 
     metrics_sum: Dict[str, float] = {}
-    metrics_count: Dict[str, int] = {}
     numeric_types = (int, float, np.integer, np.floating)
 
     pdf_ctx: Optional[PdfPages] = None
     if log_to_pdf:
-        if isinstance(log_to_pdf, (str, os.PathLike)):
-            pdf_path = os.fspath(log_to_pdf)
-        else:
-            base_dir = os.fspath(os.path.dirname(os.fspath(actor_weights)) or ".")
-            pdf_path = os.path.join(base_dir, "testing_windows.pdf")
+        weights = actor_weights.split("/")[-1].split(".")[0] +  actor_weights.split("/")[-1].split(".")[1] + "_testing.pdf"
+        base_dir = os.fspath(os.path.dirname(os.fspath(actor_weights)) or ".")
+        pdf_path = os.path.join(base_dir, "testing", weights)
         os.makedirs(os.path.dirname(pdf_path) or ".", exist_ok=True)
         pdf_ctx = PdfPages(pdf_path)
 
@@ -1176,21 +1173,16 @@ def testing_simulation(
             for key, value in metrics.items():
                 if isinstance(value, numeric_types):
                     metrics_sum[key] = metrics_sum.get(key, 0.0) + float(value)
-                    metrics_count[key] = metrics_count.get(key, 0) + 1
+
     finally:
         if pdf_ctx:
             summary_lines: List[str] = []
             if metrics_sum:
                 summary_lines.append("Aggregated metrics:")
                 for key in sorted(metrics_sum):
-                    if key == "Realized PnL":
+                    if key == "Realized PnL" or key == "Closed trades":
                         agg_value = metrics_sum[key]
-                    else:
-                        count = metrics_count.get(key, total_windows)
-                        if count <= 0:
-                            continue
-                        agg_value = metrics_sum[key] / count
-                    summary_lines.append(f"{key}: {_format_metric_value(agg_value)}")
+                        summary_lines.append(f"{key}: {_format_metric_value(agg_value)}")
             summary_fig = plt.figure(figsize=(8.27, 11.69))
             summary_fig.suptitle("Aggregate summary", fontsize=14)
             ax = summary_fig.add_subplot(111)
@@ -1210,14 +1202,9 @@ def testing_simulation(
     if metrics_sum:
         print("\nAggregated metrics:")
         for key in sorted(metrics_sum):
-            if key == "Realized PnL":
-                agg_value = metrics_sum[key]
-            else:
-                count = metrics_count.get(key, total_windows)
-                if count <= 0:
-                    continue
-                agg_value = metrics_sum[key] / count
-            print(f"{key}: {_format_metric_value(agg_value)}")
+            if key == "Realized PnL" or key == "Closed trades":
+                agg_value = metrics_sum[key]   
+                print(f"{key}: {_format_metric_value(agg_value)}")
 
 
 __all__ = [
