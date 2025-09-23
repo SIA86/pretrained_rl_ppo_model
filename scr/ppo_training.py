@@ -763,6 +763,7 @@ def train(
     # создаем среду для валидации и инфереса feature_dim
     val_required = val_cfg.max_steps + 1
     val_candidates: List[pd.DataFrame] | None = None
+    required_deals = None
     if index_ranges:
         val_candidates = _prepare_validation_windows(val_df, index_ranges, val_required)
         if not val_candidates:
@@ -1041,7 +1042,9 @@ def train(
             print(
                 f"Total Realized PnL: {baseline_total_pnl:.4f} / {actor_total_pnl:.4f}"
             )
-            required_deals = int(np.floor(deals_frequency * baseline_total_deals))
+            if required_deals is None:
+                required_deals = int(np.floor(deals_frequency * baseline_total_deals))
+                
             print(
                 "Total Closed trades: "
                 f"{baseline_total_deals:d} / {actor_total_deals:d} "

@@ -42,6 +42,10 @@ class EnvConfig(NamedTuple):
     terminal_reward: bool = False
     # Коэффициент терминального бонуса
     terminal_reward_coef: float = 0.0
+    # Закрытие сделки в конце эпизода
+    close_deal_if_done: bool = False,
+    # Только положительная терминальная награда
+    only_positive_tr_reward: bool = False
 
 
 DEFAULT_CONFIG = EnvConfig(
@@ -56,6 +60,8 @@ DEFAULT_CONFIG = EnvConfig(
     hold_penalty=0.0,  # нет штрафа за бездействие
     terminal_reward=False,
     terminal_reward_coef=0.0,
+    close_deal_if_done=False,
+    only_positive_tr_reward=False
 )
 
 
@@ -138,6 +144,13 @@ def _step_single(
 
     allowed_side = cfg.mode  # допустимое направление торговли
 
+    # Если конец эпизода, то принудительно закрываем (если cfg.close_deal_if_done = True)
+    if done and cfg.close_deal_if_done:
+        if position == 0:
+            action == 3
+        if position != 0:
+            action == 1
+
     if action == 0:
         # Открыть позицию
         if position == 0:
@@ -167,9 +180,10 @@ def _step_single(
         # Оставаться вне позиции (Wait)
     # elif action == 2 -> Hold: ничего не делаем
 
-    if closed and cfg.terminal_reward and net_trade > 0.0:
-        terminal_bonus = net_trade * cfg.terminal_reward_coef
-
+    if closed and cfg.terminal_reward: # and net_trade > 0.0:
+        if not cfg.only_positive_tr_reward or net_trade > 0.0:
+            terminal_bonus = net_trade * cfg.terminal_reward_coef
+        
     if position != 0 and cfg.time_penalty > 0.0:
         eff_hold = hold_steps
         penalty -= np.sqrt(max(eff_hold - cfg.valid_time, 0)) * cfg.time_penalty
