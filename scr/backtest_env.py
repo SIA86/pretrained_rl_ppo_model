@@ -32,8 +32,6 @@ class EnvConfig(NamedTuple):
     max_steps: int
     # Множитель вознаграждения за шаг
     reward_scale: float
-    # Использовать ли логарифмическую доходность
-    use_log_reward: bool
     # задержка после которой начинат начисляться штраф
     valid_time: int = 0
     # Штраф за каждый шаг удержания позиции
@@ -53,7 +51,6 @@ DEFAULT_CONFIG = EnvConfig(
     leverage=1.0,  # без плеча
     max_steps=10**9,  # практически бесконечный эпизод
     reward_scale=1.0,  # без масштабирования вознаграждения
-    use_log_reward=False,  # линейная доходность
     valid_time=0,
     time_penalty=0.0,  # нет штрафа за удержание
     hold_penalty=0.0,  # нет штрафа за бездействие
@@ -183,17 +180,8 @@ def _step_single(
     equity = realized_pnl + unrealized
     prev_equity = prev_realized + prev_unrealized
 
-    # Возможность использовать логарифмическую доходность
     pnl_step = equity - prev_equity
-    # Лог-вознаграждение: защищаемся от домена log1p (x > -1)
-
-    if cfg.use_log_reward:
-        # Жёстко клипуем шаговую доходность снизу чуть выше -1
-        total = pnl_step + penalty
-        clipped = total if total > -0.999999 else -0.999999
-        core = np.log1p(clipped)
-    else:
-        core = pnl_step + penalty
+    core = pnl_step + penalty
     if terminal_bonus != 0.0:
         core += terminal_bonus
     reward = cfg.reward_scale * core
@@ -298,7 +286,6 @@ class BacktestEnv:
             cfg.leverage,
             max_steps,
             cfg.reward_scale,
-            cfg.use_log_reward,
             cfg.valid_time,
             cfg.time_penalty,
             cfg.hold_penalty,
