@@ -23,6 +23,8 @@ def make_env(prices, **cfg_kwargs):
         use_log_reward=cfg_kwargs.get("use_log_reward", False),
         time_penalty=cfg_kwargs.get("time_penalty", 0.0),
         hold_penalty=cfg_kwargs.get("hold_penalty", 0.0),
+        terminal_reward=cfg_kwargs.get("terminal_reward", False),
+        terminal_reward_coef=cfg_kwargs.get("terminal_reward_coef", 0.0),
     )
     df = pd.DataFrame({"close": prices})
     return BacktestEnv(df, cfg=cfg)
@@ -70,13 +72,15 @@ def test_time_penalty():
     env.reset()
     env.step(0)  # open
     last = run_actions(env, [2], reset=False)  # hold one step
-    assert last["equity"] == pytest.approx(-0.1)
+    assert last["equity"] == pytest.approx(0.0)
+    assert last["reward"] == pytest.approx(-0.1)
 
 
 def test_hold_penalty():
     env = make_env([1, 1], hold_penalty=0.05)
     last = run_actions(env, [3])
-    assert last["equity"] == pytest.approx(-0.05)
+    assert last["equity"] == pytest.approx(0.0)
+    assert last["reward"] == pytest.approx(-0.05)
 
 
 def test_use_log_reward():
@@ -88,6 +92,21 @@ def test_use_log_reward():
     assert last_log["equity"] == pytest.approx(0.5)
     assert last_lin["reward"] == pytest.approx(0.5)
     assert last_log["reward"] == pytest.approx(np.log1p(0.5))
+
+
+def test_terminal_reward_bonus_applied():
+    coef = 0.5
+    env = make_env(
+        [1, 2, 3], terminal_reward=True, terminal_reward_coef=coef
+    )
+    env.reset()
+    env.step(0)
+    _, reward, _, info = env.step(1)
+    last = env.logs().iloc[-1]
+    expected_bonus = last["pnl_trade"] * coef
+    assert last["terminal_bonus"] == pytest.approx(expected_bonus)
+    assert info["terminal_bonus"] == pytest.approx(expected_bonus)
+    assert reward == pytest.approx(last["pnl_trade"] + expected_bonus)
 
 
 def test_plot_show_false(monkeypatch):

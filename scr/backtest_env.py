@@ -40,6 +40,10 @@ class EnvConfig(NamedTuple):
     time_penalty: float = 0.0
     # Штраф за бездействие без открытой позиции
     hold_penalty: float = 0.0
+    # Добавлять ли терминальный бонус при закрытии сделки
+    terminal_reward: bool = False
+    # Коэффициент терминального бонуса
+    terminal_reward_coef: float = 0.0
 
 
 DEFAULT_CONFIG = EnvConfig(
@@ -53,6 +57,8 @@ DEFAULT_CONFIG = EnvConfig(
     valid_time=0,
     time_penalty=0.0,  # нет штрафа за удержание
     hold_penalty=0.0,  # нет штрафа за бездействие
+    terminal_reward=False,
+    terminal_reward_coef=0.0,
 )
 
 
@@ -128,6 +134,7 @@ def _step_single(
     exec_price = 0.0
     pnl_trade = 0.0
     penalty = 0.0
+    terminal_bonus = 0.0
 
     allowed_side = cfg.mode  # допустимое направление торговли
 
@@ -155,6 +162,9 @@ def _step_single(
     # elif action == 3: -> Wait: ничего не делаем
         # Оставаться вне позиции (Wait)
     # elif action == 2 -> Hold: ничего не делаем
+
+    if closed and cfg.terminal_reward and pnl_trade != 0.0:
+        terminal_bonus = pnl_trade * cfg.terminal_reward_coef
 
     if position != 0 and cfg.time_penalty > 0.0:
         eff_hold = hold_steps
@@ -184,6 +194,8 @@ def _step_single(
         core = np.log1p(clipped)
     else:
         core = pnl_step + penalty
+    if terminal_bonus != 0.0:
+        core += terminal_bonus
     reward = cfg.reward_scale * core
 
     # print(f"POS {position} PNL {pnl_step} P {penalty} R {reward}")
@@ -199,6 +211,7 @@ def _step_single(
         closed,
         exec_price,
         pnl_trade,
+        terminal_bonus,
         done,
     )
 
@@ -289,6 +302,8 @@ class BacktestEnv:
             cfg.valid_time,
             cfg.time_penalty,
             cfg.hold_penalty,
+            cfg.terminal_reward,
+            cfg.terminal_reward_coef,
         )
         # Инициализация состояния
         self.reset()
@@ -396,6 +411,7 @@ class BacktestEnv:
             closed,
             exec_price,
             pnl_trade,
+            terminal_bonus,
             done,
         ) = _step_single(
             int64(action),
@@ -463,6 +479,7 @@ class BacktestEnv:
                     "closed": closed,
                     "exec_price": exec_price,
                     "pnl_trade": pnl_trade,
+                    "terminal_bonus": terminal_bonus,
                 }
             )
 
@@ -476,6 +493,7 @@ class BacktestEnv:
             "hold_steps": self.hold_steps,
             "drawdown": self.drawdown,
             "action_mask": mask,
+            "terminal_bonus": terminal_bonus,
         }
         return obs, reward, done, info
 
