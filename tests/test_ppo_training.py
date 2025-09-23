@@ -37,7 +37,6 @@ def make_cfg():
         leverage=1.0,
         max_steps=1,
         reward_scale=1.0,
-        use_log_reward=False,
         time_penalty=0.0,
         hold_penalty=0.0,
     )

@@ -20,7 +20,6 @@ def make_env(prices, **cfg_kwargs):
         leverage=1.0,
         max_steps=100,
         reward_scale=1.0,
-        use_log_reward=cfg_kwargs.get("use_log_reward", False),
         time_penalty=cfg_kwargs.get("time_penalty", 0.0),
         hold_penalty=cfg_kwargs.get("hold_penalty", 0.0),
         terminal_reward=cfg_kwargs.get("terminal_reward", False),
@@ -83,17 +82,6 @@ def test_hold_penalty():
     assert last["reward"] == pytest.approx(-0.05)
 
 
-def test_use_log_reward():
-    env_lin = make_env([1, 2, 3])
-    last_lin = run_actions(env_lin, [0, 1])
-    env_log = make_env([1, 2, 3], use_log_reward=True)
-    last_log = run_actions(env_log, [0, 1])
-    assert last_lin["equity"] == pytest.approx(0.5)
-    assert last_log["equity"] == pytest.approx(0.5)
-    assert last_lin["reward"] == pytest.approx(0.5)
-    assert last_log["reward"] == pytest.approx(np.log1p(0.5))
-
-
 def test_terminal_reward_bonus_applied():
     coef = 0.5
     env = make_env(
@@ -139,7 +127,6 @@ def test_no_index_error_after_done():
         leverage=1.0,
         max_steps=3,
         reward_scale=1.0,
-        use_log_reward=False,
         time_penalty=0.0,
         hold_penalty=0.0,
     )
@@ -160,27 +147,6 @@ def test_no_index_error_after_done():
     assert r == 0.0
 
 
-def test_log_reward_no_nan_on_large_negative():
-    # Имитация сильного минуса на шаге (резкий гэп вниз)
-    df = pd.DataFrame({"close": [100.0, 100.0, 0.1], "feat": [0, 1, 2]})
-    cfg = EnvConfig(
-        mode=1,
-        fee=0.0,
-        spread=0.0,
-        leverage=50.0,
-        max_steps=10**9,
-        reward_scale=1.0,
-        use_log_reward=True,
-        time_penalty=0.0,
-        hold_penalty=0.0,
-    )
-    env = BacktestEnv(df, feature_cols=["feat"], cfg=cfg)
-
-    env.step(0)  # Open long
-    obs, reward, done, info = env.step(2)  # Hold → сильный минус
-    assert np.isfinite(reward), "reward should be finite with log reward clipping"
-
-
 def test_vector_action_with_mask_argmax():
     df = make_df(5)
     env = BacktestEnv(
@@ -193,7 +159,6 @@ def test_vector_action_with_mask_argmax():
             leverage=1.0,
             max_steps=10**9,
             reward_scale=1.0,
-            use_log_reward=False,
             time_penalty=0.0,
             hold_penalty=0.0,
         ),
@@ -281,7 +246,6 @@ def test_observation_state_updates():
             leverage=1.0,
             max_steps=100,
             reward_scale=1.0,
-            use_log_reward=False,
             time_penalty=0.0,
             hold_penalty=0.0,
         ),

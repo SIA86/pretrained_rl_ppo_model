@@ -195,7 +195,6 @@ def _simulate_positions_via_env(
         leverage=1.0,
         max_steps=len(df) - 1,
         reward_scale=1.0,
-        use_log_reward=False,
         time_penalty=0.0,
         hold_penalty=0.0,
     )
