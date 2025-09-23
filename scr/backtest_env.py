@@ -130,6 +130,9 @@ def _step_single(
     closed = False
     exec_price = 0.0
     pnl_trade = 0.0
+    entry_fee = 0.0
+    exit_fee = 0.0
+    net_trade = 0.0
     penalty = 0.0
     terminal_bonus = 0.0
 
@@ -147,12 +150,16 @@ def _step_single(
     elif action == 1:
         # Закрыть имеющуюся позицию
         if position != 0:
+            prev_entry_price = entry_price
             exec_price = _exec_price(next_price, -position, cfg.spread)
             pnl_trade = (
-                position * ((exec_price - entry_price) / entry_price) * cfg.leverage
+                position * ((exec_price - prev_entry_price) / prev_entry_price)
+                * cfg.leverage
             )
-            fee = _fee_notional(exec_price, cfg.leverage, cfg.fee)
-            realized_pnl += pnl_trade - fee
+            exit_fee = _fee_notional(exec_price, cfg.leverage, cfg.fee)
+            entry_fee = _fee_notional(prev_entry_price, cfg.leverage, cfg.fee)
+            realized_pnl += pnl_trade - exit_fee
+            net_trade = pnl_trade - (entry_fee + exit_fee)
             position = 0
             entry_price = 0.0
             closed = True
@@ -160,8 +167,8 @@ def _step_single(
         # Оставаться вне позиции (Wait)
     # elif action == 2 -> Hold: ничего не делаем
 
-    if closed and cfg.terminal_reward and pnl_trade != 0.0:
-        terminal_bonus = pnl_trade * cfg.terminal_reward_coef
+    if closed and cfg.terminal_reward and net_trade > 0.0:
+        terminal_bonus = net_trade * cfg.terminal_reward_coef
 
     if position != 0 and cfg.time_penalty > 0.0:
         eff_hold = hold_steps
@@ -199,6 +206,9 @@ def _step_single(
         closed,
         exec_price,
         pnl_trade,
+        entry_fee,
+        exit_fee,
+        net_trade,
         terminal_bonus,
         done,
     )
@@ -398,6 +408,9 @@ class BacktestEnv:
             closed,
             exec_price,
             pnl_trade,
+            entry_fee,
+            exit_fee,
+            net_trade,
             terminal_bonus,
             done,
         ) = _step_single(
@@ -466,6 +479,9 @@ class BacktestEnv:
                     "closed": closed,
                     "exec_price": exec_price,
                     "pnl_trade": pnl_trade,
+                    "entry_fee": entry_fee,
+                    "exit_fee": exit_fee,
+                    "net_trade": net_trade,
                     "terminal_bonus": terminal_bonus,
                 }
             )
@@ -480,6 +496,9 @@ class BacktestEnv:
             "hold_steps": self.hold_steps,
             "drawdown": self.drawdown,
             "action_mask": mask,
+            "entry_fee": entry_fee,
+            "exit_fee": exit_fee,
+            "net_trade": net_trade,
             "terminal_bonus": terminal_bonus,
         }
         return obs, reward, done, info
