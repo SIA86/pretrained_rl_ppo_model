@@ -315,6 +315,8 @@ class BacktestEnv:
             cfg.hold_penalty,
             cfg.terminal_reward,
             cfg.terminal_reward_coef,
+            cfg.close_deal_if_done,
+            cfg.only_positive_tr_reward
         )
         # Инициализация состояния
         self.reset()
