@@ -332,8 +332,8 @@ class BacktestEnv:
                 raise ValueError("signals must be a 1D array")
             if sig_arr.shape[0] != len(self.df):
                 raise ValueError("signals length must match dataframe length")
-            if not np.all(np.isin(sig_arr, (-1, 0, 1))):
-                raise ValueError("signals must contain only -1, 0 or 1 values")
+            if not np.all(np.isin(sig_arr, (-1, 1))):
+                raise ValueError("signals must contain only -1 or 1 values")
             self.signals = sig_arr.astype(np.int8, copy=False)
         # Инициализация состояния
         self.reset()

@@ -36,20 +36,27 @@ def test_signals_validation_length_mismatch():
     df = make_df(4)
     cfg = make_cfg()
     with pytest.raises(ValueError):
-        BacktestEnv(df, cfg=cfg, signals=[0, 1, 0])
+        BacktestEnv(df, cfg=cfg, signals=[1, -1, 1])
 
 
 def test_signals_validation_value_range():
     df = make_df(4)
     cfg = make_cfg()
     with pytest.raises(ValueError):
-        BacktestEnv(df, cfg=cfg, signals=[0, 2, 0, 1])
+        BacktestEnv(df, cfg=cfg, signals=[1, 2, -1, 1])
+
+
+def test_signals_validation_rejects_zero():
+    df = make_df(3)
+    cfg = make_cfg()
+    with pytest.raises(ValueError):
+        BacktestEnv(df, cfg=cfg, signals=[1, 0, -1])
 
 
 def test_countdown_enables_trading():
     df = make_df(6)
     cfg = make_cfg(n=2)
-    signals = [1, 0, 0, 0, 0, 0]
+    signals = [1, 1, 1, 1, 1, 1]
     env = BacktestEnvWithSignals(df, cfg=cfg, signals=signals)
     env.reset()
 
@@ -76,7 +83,7 @@ def test_countdown_enables_trading():
 def test_signal_minus_one_forces_closure():
     df = make_df(6)
     cfg = make_cfg(n=1)
-    signals = [1, 1, -1, 0, 0, 0]
+    signals = [1, 1, -1, -1, -1, -1]
     env = BacktestEnvWithSignals(df, cfg=cfg, signals=signals)
     env.reset()
 
