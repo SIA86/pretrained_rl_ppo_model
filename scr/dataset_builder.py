@@ -352,6 +352,7 @@ def _downsample_hold_wait(
     if betta <= 0.0:
         return (X, Y, M, W, R, SW) if I is None else (X, Y, M, W, R, SW, I)
     cls = np.argmax(Y, axis=1)
+    print(f"Cls sample count: {np.unique(cls, return_counts=True)}")
     hw_mask = np.isin(
         cls, [ACTIONS.index("Hold"), ACTIONS.index("Wait")]
     )

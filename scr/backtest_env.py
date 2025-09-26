@@ -150,9 +150,9 @@ def _step_single(
     # Если конец эпизода, то принудительно закрываем (если cfg.close_deal_if_done = True)
     if done and cfg.close_deal_if_done:
         if position == 0:
-            action == 3
+            action = 3
         if position != 0:
-            action == 1
+            action = 1
 
     if action == 0:
         # Открыть позицию
