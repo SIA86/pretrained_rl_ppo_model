@@ -23,6 +23,7 @@ from tensorflow import keras
 from matplotlib.backends.backend_pdf import PdfPages
 
 from .backtest_env import BacktestEnv, EnvConfig
+from .backtest_env_with_signals import BacktestEnvWithSignals, EnvConfig
 from .dataset_builder import extract_features
 from .normalisation import NormalizationStats
 from .residual_lstm import (
@@ -716,6 +717,33 @@ def _evaluate_window(
     return EvalCacheEntry(env=env if keep_env else None, metrics=metrics)
 
 
+def _evaluate_window_with_signals(
+    window_df: pd.DataFrame,
+    signals: np.ndarray,
+    *,
+    model: keras.Model,
+    feature_cols: List[str],
+    cfg: EnvConfig,
+    seq_len: int,
+    feature_dim: int,
+    price_col: str,
+    keep_env: bool,
+    debug: bool = False,
+) -> EvalCacheEntry:
+    """Оценить модель на одном окне валидации."""
+
+    env = BacktestEnvWithSignals(
+        window_df,
+        feature_cols=feature_cols,
+        cfg=cfg,
+        price_col=price_col,
+        ppo_true=True,
+        record_history=True,
+        signals=signals
+    )
+    metrics = evaluate_profit(env, model, seq_len, feature_dim, debug=debug)
+    return EvalCacheEntry(env=env if keep_env else None, metrics=metrics)
+
 def train(
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
@@ -1104,6 +1132,7 @@ def testing_simulation(
     test_cfg: EnvConfig,
     *,
     index_ranges: Optional[Sequence[IntervalLike]] = None,
+    signals: Optional[Sequence[int]] = None,
     log_to_pdf: bool | str = False,
     debug: bool = False,
 ) -> None:
@@ -1145,17 +1174,32 @@ def testing_simulation(
 
     try:
         for idx, window_df in enumerate(test_windows):
-            entry = _evaluate_window(
-                window_df,
-                model=actor,
-                feature_cols=feature_cols,
-                cfg=test_cfg,
-                seq_len=seq_len,
-                feature_dim=feature_dim,
-                price_col="Open",
-                keep_env=True,
-                debug=debug,
-            )
+            if signals is not None:
+                print("Backtesting with trend filter")
+                entry = _evaluate_window_with_signals(
+                    window_df,
+                    signals,
+                    model=actor,
+                    feature_cols=feature_cols,
+                    cfg=test_cfg,
+                    seq_len=seq_len,
+                    feature_dim=feature_dim,
+                    price_col="Open",
+                    keep_env=True,
+                    debug=debug,
+                )
+            else:
+                entry = _evaluate_window(
+                    window_df,
+                    model=actor,
+                    feature_cols=feature_cols,
+                    cfg=test_cfg,
+                    seq_len=seq_len,
+                    feature_dim=feature_dim,
+                    price_col="Open",
+                    keep_env=True,
+                    debug=debug,
+                )
             metrics = entry.metrics
 
             if pdf_ctx and entry.env is not None:
