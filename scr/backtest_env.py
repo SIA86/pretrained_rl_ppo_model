@@ -3,7 +3,7 @@ from __future__ import annotations
 # Стандартные библиотечные и внешние зависимости
 import numpy as np
 import pandas as pd
-from typing import Optional, List, Dict, NamedTuple, Any
+from typing import Optional, List, Dict, NamedTuple, Any, Sequence
 from numba import njit, boolean, int64, float64
 import matplotlib.pyplot as plt
 from .normalisation import NormalizationStats
@@ -46,6 +46,8 @@ class EnvConfig(NamedTuple):
     close_deal_if_done: bool = False,
     # Только положительная терминальная награда
     only_positive_tr_reward: bool = False
+    # Количество свечей ожидания перед разрешением торговли после сигнала 1
+    n: int = 0
 
 
 DEFAULT_CONFIG = EnvConfig(
@@ -61,7 +63,8 @@ DEFAULT_CONFIG = EnvConfig(
     terminal_reward=False,
     terminal_reward_coef=0.0,
     close_deal_if_done=False,
-    only_positive_tr_reward=False
+    only_positive_tr_reward=False,
+    n=0,
 )
 
 
@@ -242,6 +245,7 @@ class BacktestEnv:
         cfg: EnvConfig = DEFAULT_CONFIG,
         ppo_true: bool = False,
         record_history: Optional[bool] = None,
+        signals: Optional[Sequence[int]] = None,
     ):
         """Подготовка данных и настройка параметров среды.
 
@@ -316,8 +320,21 @@ class BacktestEnv:
             cfg.terminal_reward,
             cfg.terminal_reward_coef,
             cfg.close_deal_if_done,
-            cfg.only_positive_tr_reward
+            cfg.only_positive_tr_reward,
+            cfg.n,
         )
+        self.signals: Optional[np.ndarray]
+        if signals is None:
+            self.signals = None
+        else:
+            sig_arr = np.asarray(signals)
+            if sig_arr.ndim != 1:
+                raise ValueError("signals must be a 1D array")
+            if sig_arr.shape[0] != len(self.df):
+                raise ValueError("signals length must match dataframe length")
+            if not np.all(np.isin(sig_arr, (-1, 0, 1))):
+                raise ValueError("signals must contain only -1, 0 or 1 values")
+            self.signals = sig_arr.astype(np.int8, copy=False)
         # Инициализация состояния
         self.reset()
 
