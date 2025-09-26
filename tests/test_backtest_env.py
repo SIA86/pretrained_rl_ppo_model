@@ -106,11 +106,13 @@ def test_terminal_reward_bonus_not_applied_with_negative_net_trade():
     env.step(0)
     _, reward, _, info = env.step(1)
     last = env.logs().iloc[-1]
+    prev = env.logs().iloc[-2]
+    expected_bonus = last["net_trade"] * coef
     assert last["pnl_trade"] > 0.0
     assert last["net_trade"] < 0.0
-    assert last["terminal_bonus"] == pytest.approx(0.0)
-    assert info["terminal_bonus"] == pytest.approx(0.0)
-    assert reward == pytest.approx(last["pnl_trade"] - last["exit_fee"])
+    assert last["terminal_bonus"] == pytest.approx(expected_bonus)
+    assert info["terminal_bonus"] == pytest.approx(expected_bonus)
+    assert reward == pytest.approx((last["equity"] - prev["equity"]) + expected_bonus)
 
 
 def test_plot_show_false(monkeypatch):
