@@ -32,6 +32,7 @@ from .residual_lstm import (
     build_head,
     masked_logits_and_probs,
 )
+from .time_utils import IntervalLike, align_intervals
 
 
 def build_critic(
@@ -75,8 +76,6 @@ class EvalCacheEntry:
     metrics: Dict[str, float] = field(default_factory=dict)
 
 
-IntervalLike = pd.Index | np.ndarray | Iterable[pd.Timestamp]
-
 _ACTOR_LOGITS_CACHE: "weakref.WeakKeyDictionary[keras.Model, Dict[Tuple[int, int, str], Tuple[tf.types.experimental.ConcreteFunction, tf.dtypes.DType]]]" = weakref.WeakKeyDictionary()
 _ACTOR_LOGITS_LOCK = threading.Lock()
 
@@ -119,21 +118,6 @@ def _get_actor_logits_fn(
             cache[key] = entry
     return entry
 
-def _normalize_interval(
-    index: pd.DatetimeIndex, interval: IntervalLike
-) -> pd.DatetimeIndex:
-    """Привести интервал к DatetimeIndex исходного индекса данных."""
-    seg = pd.DatetimeIndex(interval)
-    if index.tz is not None:
-        if seg.tz is None:
-            seg = seg.tz_localize(index.tz)
-        elif str(seg.tz) != str(index.tz):
-            seg = seg.tz_convert(index.tz)
-    elif seg.tz is not None:
-        seg = seg.tz_convert("UTC").tz_localize(None)
-    return seg.intersection(index)
-
-
 def _collect_valid_starts(
     index: pd.DatetimeIndex,
     intervals: Sequence[IntervalLike],
@@ -147,7 +131,7 @@ def _collect_valid_starts(
 
     starts: List[np.ndarray] = []
     for interval in intervals:
-        seg = _normalize_interval(index, interval)
+        seg = align_intervals(index, interval)
         if len(seg) == 0:
             continue
         seg = seg.unique().sort_values()
@@ -179,7 +163,7 @@ def _prepare_validation_windows(
 
     windows: List[pd.DataFrame] = []
     for interval in intervals:
-        seg = _normalize_interval(val_df.index, interval)
+        seg = align_intervals(val_df.index, interval)
         if len(seg) == 0:
             continue
         seg = seg.unique().sort_values()

@@ -3,6 +3,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Iterable
 
+from .time_utils import IntervalLike, align_intervals
+
 def get_intervals(
     df: pd.DataFrame,
     col: str,
@@ -46,7 +48,7 @@ def get_intervals(
 def plot_price_with_valid(
     df: pd.DataFrame,
     price_col: str,
-    valid_segments: Iterable,   # список DatetimeIndex или массивов datetime64[ns]
+    valid_segments: Iterable[IntervalLike],   # список DatetimeIndex или массивов datetime64[ns]
     *,
     n_plots: int = 5,
     seed: int | None = None,
@@ -69,30 +71,27 @@ def plot_price_with_valid(
     if price_col not in df.columns:
         raise KeyError(f"Колонка '{price_col}' не найдена")
 
+    base_df = df
     di = df.index
 
     # нормализуем список сегментов к DatetimeIndex
     norm_segments: list[pd.DatetimeIndex] = []
+    localized = False
     for seg in valid_segments:
         seg_di = pd.DatetimeIndex(seg)
 
-        # согласование часовых поясов
-        if di.tz is not None and seg_di.tz is not None:
-            if str(di.tz) != str(seg_di.tz):
-                seg_di = seg_di.tz_convert(di.tz)
-        elif di.tz is not None and seg_di.tz is None:
-            seg_di = seg_di.tz_localize(di.tz)
-        elif di.tz is None and seg_di.tz is not None:
-            if assume_df_tz:
-                di2 = di.tz_localize(assume_df_tz)
-                df = df.copy()
-                df.index = di2
-                di = di2
-                seg_di = seg_di.tz_convert(assume_df_tz)
-            else:
-                seg_di = seg_di.tz_convert("UTC").tz_localize(None)
+        if (
+            not localized
+            and di.tz is None
+            and seg_di.tz is not None
+            and assume_df_tz is not None
+        ):
+            base_df = df.copy()
+            base_df.index = base_df.index.tz_localize(assume_df_tz)
+            di = base_df.index
+            localized = True
 
-        seg_di = seg_di.intersection(di)
+        seg_di = align_intervals(di, seg_di)
         if len(seg_di) > 0:
             norm_segments.append(seg_di)
 
@@ -108,7 +107,7 @@ def plot_price_with_valid(
 
     # отдельный график для каждого сегмента
     for i, seg in enumerate(chosen_segments, start=1):
-        segment_df = df.loc[seg[0]:seg[-1], price_col]
+        segment_df = base_df.loc[seg[0]:seg[-1], price_col]
 
         plt.figure(figsize=fig_size)
         plt.plot(segment_df.index, segment_df.values, linewidth=line_width)

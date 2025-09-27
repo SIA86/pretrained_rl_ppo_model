@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from .normalisation import NormalizationStats
+from .time_utils import IntervalLike, align_intervals
 
 # ---------------------------------------------------------------------------
 # Константы, описывающие колоноки действий
@@ -415,7 +416,7 @@ class DatasetBuilderForYourColumns:
         df: pd.DataFrame,
         return_indices: bool = False,
         *,
-        train_valid_indices: Optional[Sequence[pd.DatetimeIndex]] = None,
+        train_valid_indices: Optional[Sequence[IntervalLike]] = None,
     ):
         X = df[self.feature_cols].to_numpy(np.float32)
         A = df[self.account_cols].to_numpy(np.float32)
@@ -456,29 +457,14 @@ class DatasetBuilderForYourColumns:
                 )
 
             df_index: pd.DatetimeIndex = df.index  # type: ignore[assignment]
-            df_tz = df_index.tz
             collected_positions = []
-            for idx in train_valid_indices:
-                if not isinstance(idx, pd.DatetimeIndex):
-                    raise TypeError(
-                        "train_valid_indices должен содержать только объекты pandas.DatetimeIndex"
-                    )
-
-                aligned_idx = idx
-                if df_tz != idx.tz:
-                    if idx.tz is None and df_tz is not None:
-                        aligned_idx = idx.tz_localize(df_tz)
-                    elif idx.tz is not None and df_tz is None:
-                        aligned_idx = idx.tz_convert(None)
-                    else:
-                        aligned_idx = idx.tz_convert(df_tz)
-
-                positions = df_index.get_indexer(aligned_idx)
-                if positions.size == 0:
+            for interval in train_valid_indices:
+                seg = align_intervals(df_index, interval)
+                if len(seg) == 0:
                     continue
-                valid_positions = positions[positions >= 0]
-                if valid_positions.size > 0:
-                    collected_positions.append(valid_positions.astype(np.int64, copy=False))
+                positions = df_index.get_indexer(seg)
+                if positions.size > 0:
+                    collected_positions.append(positions.astype(np.int64, copy=False))
 
             if collected_positions:
                 train_valid_positions = np.unique(np.concatenate(collected_positions))
