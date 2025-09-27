@@ -343,11 +343,12 @@ def collect_trajectories(
             ppo_true=True,
             record_history=False,
         )
-        obs = env.reset()
-        states = [obs["state"].copy()]
+        env.reset()
+        zero_state = env._zero_state.copy()
+        states = [zero_state.copy()]
         for _ in range(seq_len - 1):
-            obs, _, done, _ = env.step(3)
-            states.append(obs["state"].copy())
+            _, _, done, _ = env.step(3)
+            states.append(zero_state.copy())
             if done:
                 break
         envs[idx] = env
