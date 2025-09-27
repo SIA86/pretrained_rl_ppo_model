@@ -102,3 +102,30 @@ def test_signal_minus_one_forces_closure():
     assert info["can_trade"] is False
     assert info["countdown"] == 0
 
+
+def test_state_zero_when_trading_disabled():
+    df = make_df(8)
+    cfg = make_cfg(n=2)
+    signals = [1, 1, 1, -1, -1, -1, -1, -1]
+    env = BacktestEnvWithSignals(df, cfg=cfg, signals=signals, ppo_true=True)
+
+    obs = env.reset()
+    assert np.allclose(obs["state"], 0.0)
+
+    obs, _, _, info = env.step(0)
+    assert info["can_trade"] is False
+    assert np.allclose(obs["state"], 0.0)
+
+    obs, _, _, info = env.step(0)
+    assert info["can_trade"] is True
+    assert not np.allclose(obs["state"], 0.0)
+
+    obs, _, _, info = env.step(0)
+    assert info["can_trade"] is True
+    assert env.position == 1
+    assert pytest.approx(1.0) == obs["state"][0]
+
+    obs, _, _, info = env.step(2)
+    assert info["can_trade"] is False
+    assert np.allclose(obs["state"], 0.0)
+

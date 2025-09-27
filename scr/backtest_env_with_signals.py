@@ -80,6 +80,10 @@ class BacktestEnvWithSignals(BacktestEnv):
 
         self._finalize_countdown(current_signal)
 
+        if not self.can_trade:
+            obs = dict(obs)
+            obs["state"] = self._zero_state.copy()
+
         info = dict(info)
         info.update(
             signal=current_signal,
